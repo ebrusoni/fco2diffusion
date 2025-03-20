@@ -1,0 +1,21 @@
+# python generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# venv
+.venv
+.DS_Store
+
+# don't include data files
+data/*
+outputs/*
+# dont include models
+models/*
+# do not include in gitignore
+!data/.gitkeep
+!data/data_sources.yaml
+!outputs/.gitkeep
