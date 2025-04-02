@@ -46,11 +46,7 @@ def plot_interactive_cruise_map_lines(df, **kwargs):
     return m
 
 
-def plot_cruise_interactive_scatter_map(ser: pd.Series, **kwargs):
-
-    lat_name = kwargs.get('lat_name')
-    lon_name = kwargs.get('lon_name')
-    time_name = kwargs.get('time_name')
+def plot_cruise_interactive_scatter_map(ser: pd.Series, lat_name='lat_005', lon_name='lon_005', time_name='time_1d', **kwargs):
     name = ser.name
     ser = latlon_to_geometry(ser, lat_name=lat_name, lon_name=lon_name).reset_index()
     props = kwargs | dict(column=name, tiles='cartodbpositron',)

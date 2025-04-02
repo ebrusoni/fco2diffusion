@@ -29,6 +29,10 @@ dependencies = [
     "requests>=2.32.3",
     "aiohttp>=3.11.13",
     "cmocean>=4.0.3",
+    "haversine>=2.9.0",
+    "torch>=2.6.0",
+    "diffusers>=0.32.2",
+    "pipreqs>=0.5.0",
 ]
 readme = "README.md"
 requires-python = ">= 3.12"
