@@ -7,6 +7,7 @@ import numpy as np
 from tqdm import tqdm
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from diffusers import DDPMScheduler, UNet1DModel
+import time
 
 def check_gradients(model):
     total_norm = 0
@@ -71,7 +72,7 @@ def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_s
 
             #update loss in progress bar
             progress_bar.set_postfix({"Loss": loss.item()})
-            batch.detach()
+            # batch.detach()
         train_losses.append(epoch_loss / len(train_dataloader))
         print(f"Epoch {epoch+1} Loss: {epoch_loss / len(train_dataloader):.6f}")
         check_gradients(model)
@@ -88,7 +89,7 @@ def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_s
         print(f"Validation Loss: {val_loss / len(val_dataloader):.6f}")
 
         if save_model_path and (epoch+1) % 10 == 0:
-            torch.save(model.state_dict(), save_model_path+f"_{epoch+1}.pt")
+            torch.save(model.state_dict(), save_model_path+f"e_{epoch+1}.pt")
 
     return model, train_losses, val_losses
 
@@ -122,22 +123,30 @@ def full_denoise(model, noise_scheduler, context_loader, n_samples=10):
     for ix in range(n_samples):
         print(ix)
         batch_sample = []
-        for context_batch in context_loader:
+        # tdqm progress bar for context_loader
+        context_loader = tqdm(context_loader, desc=f"Sample {ix+1}/{n_samples}")
+        for (bno, context_batch) in enumerate(context_loader):
             context = context_batch.to(device)
             # context = context.unsqueeze(0)
             sample = torch.randn((context.shape[0], 1, context.shape[2])).to(device)
+            mask = torch.ones_like(sample).float().to(device)
+            sample_context = torch.zeros(context.shape[0], context.shape[1] + 2, context.shape[2]).to(device)
+            sample_context[:, 0:1, :] = sample
+            sample_context[:, 1:-1, :] = context
+            sample_context[:, -1:, :] = mask
             for i, t in enumerate(noise_scheduler.timesteps):
-                mask = torch.ones_like(sample).bool()
                 # concat noise, context and mask
-                sample_context = torch.cat([sample, context, mask], dim=1)
-            
+                sample_context[:, 0:1, :] = sample
                 # Get model pred
                 with torch.no_grad():
                     residual = model(sample_context, t, return_dict=False)[0]
-            
                 # Update sample with step
                 sample = noise_scheduler.step(residual, t, sample).prev_sample
+                # end_time = time.time()
+            context_batch.detach()
             batch_sample.append(sample.detach().cpu())
+            # update progress bar
+            context_loader.set_postfix({"Batch":  bno+1})
         batch_sample = torch.cat(batch_sample, dim=0)
         samples.append(batch_sample)
 
