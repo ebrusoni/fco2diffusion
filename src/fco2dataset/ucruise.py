@@ -158,7 +158,7 @@ def df_to_numpy(df2, num_bins, predictors):
     """
 
     binned = df2.groupby([pd.Grouper(level=0), 'segment_id', 'bin_id']).mean() # first bin all values in the 5km buckets found above
-    print("time_feat binned: ", binned['time_feat'].head())
+    # print("time_feat binned: ", binned['time_feat'].head())
     # index level of <binned> : [expocode, segment_id, bin_id]
     bins_per_seg = binned.groupby([pd.Grouper(level=0), pd.Grouper(level=1)]).size() # number of non-empty buckets per segment
     num_segs_tot = bins_per_seg.size # total number of segments in dataset
@@ -182,6 +182,8 @@ def df_to_numpy(df2, num_bins, predictors):
     dataset[0, offsets_seg_per_bin, bin_ids] = y
     dataset[1:, offsets_seg_per_bin, bin_ids] = X
 
+    # expomap maps expocodes to all segments indices in dataset corresponding to the same expocode
+    # mainly for visualization purposes and debugging
     expomap = pd.DataFrame(offsets_seg, index=bins_per_seg.index)
 
     return dataset, expomap
@@ -223,7 +225,7 @@ def plot_segment(X, y, titles, seg):
     fig, axs = plt.subplots(X.shape[0] + 1, 1, figsize=(5*(X.shape[0] + 1), 10), sharex=True)
     plt.xlim((0, num_bins))
     axs[0].plot(y[seg])
-    print(y[seg])
+    # print(y[seg])
     axs[0].set_title(titles[0])
     for i in range(X.shape[0]):
         axs[i + 1].plot(X[i, seg])
@@ -231,7 +233,7 @@ def plot_segment(X, y, titles, seg):
     plt.show()
 
 
-def divide_cruise_random(cruise, num_windows=64, len_window=5, max_time_delta=pd.Timedelta(days=1000), max_d_delta=np.inf, verbose=False):
+def divide_cruise_random(cruise, num_windows=64, len_window=5, max_time_delta=pd.Timedelta(days=1000), max_d_delta=np.inf, rep_ratio=1):
     """
     Divide the cruise into segments of length num_windows * len_window, by randomly selecting a starting point
 
@@ -243,16 +245,18 @@ def divide_cruise_random(cruise, num_windows=64, len_window=5, max_time_delta=pd
     track_len = (num_windows - 1) * len_window
     
     total_distance = np.sum(d_diff[1:]).astype(int)
-    random_starts = np.random.randint(0, len(srt_cruise), size=(total_distance // track_len + 1) * 2)
+    random_starts = np.random.randint(0, len(srt_cruise), size=(total_distance // track_len + 1) * rep_ratio)
+    random_starts = np.unique(random_starts)
+    # print("random_starts shape: ", random_starts)
 
     segs = []
     for location in random_starts:
         dprev = 0
         cur_seg = [0]
         cs = 0
-        while cs < track_len and location < len(srt_cruise):
+        while cs < track_len and location < len(srt_cruise) - 1:
             location += 1
-            dprev += d_diff[location]
+            dprev = d_diff[location]
             cs += dprev
             # if the segment length exceeds 64*5 kms or the time jumps than max_time_delta or jumps more than max_d_delta kilometers
             # end the segment
@@ -271,21 +275,23 @@ def divide_cruise_random(cruise, num_windows=64, len_window=5, max_time_delta=pd
     # index of the segment for each entry in the cruise
     ix_segs = list(chain(*[[i]*len(seg) for (i, seg) in enumerate(segs)]))
     # print("ix_segs shape: ", len(ix_segs))
-    print(ix_segs[:20])
+    # print(ix_segs[:20])
     # index of the entry in originial cruise df
     sequences = [np.arange(start, start + len(seg), 1, dtype=np.int32) for (start, seg) in zip(random_starts, segs)]
     sequences = np.concatenate(sequences)
     # print("sequences shape: ", sequences.shape)
-    print(sequences[:20])
+    # print(sequences[:20])
     # total length of each segment
     cum_segs = chain(*[list(accumulate(seg)) for seg in segs])
     
-    bins = np.arange(-len_window / 2., track_len, len_window)
+    bins = np.arange(-len_window / 2., track_len + len_window / 2, len_window)
     cut_sdf = pd.cut(pd.Series(cum_segs), bins=bins, labels=False)
-    binned = np.zeros((sequences.shape[0], 3), dtype=np.float32)
+    print(cut_sdf.nunique())
+    binned = np.zeros((sequences.shape[0], 3), dtype=np.int32)
     binned[:, 0] = sequences
     binned[:, 1] = ix_segs
     binned[:, 2] = cut_sdf.values
+    # print(cut_sdf.values[:20])
     df_binned = pd.DataFrame(binned, columns=['index', 'segment_id', 'bin_id'] , index=srt_cruise.index[sequences])
     df_binned[cruise.columns] = srt_cruise[cruise.columns].iloc[sequences].values
     return df_binned

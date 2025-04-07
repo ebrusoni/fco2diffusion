@@ -8,6 +8,7 @@ from tqdm import tqdm
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from diffusers import DDPMScheduler, UNet1DModel
 import time
+import pandas as pd
 
 def check_gradients(model):
     total_norm = 0
@@ -17,6 +18,34 @@ def check_gradients(model):
             total_norm += param_norm.item() ** 2
     total_norm = total_norm ** 0.5
     print(f"Total gradient norm: {total_norm}")
+
+import numpy as np
+
+
+def sinusoidal_day_embedding(num_days=365, d_model=64):
+    """
+    Create sinusoidal embeddings for days of the year.
+    
+    Args:
+        num_days (int): Number of time steps (typically 365 for days in a year)
+        d_model (int): Dimension of the embedding vector (must be even)
+        
+    Returns:
+        np.ndarray of shape (num_days, d_model)
+    """
+    assert d_model % 2 == 0, "Embedding dimension (d_model) must be even."
+    
+    days = np.arange(num_days).reshape(-1, 1)  # Shape: (365, 1)
+    div_term = np.exp(np.arange(0, d_model, 2) * (-np.log(10000.0) / d_model))  # Shape: (d_model/2,)
+    
+    pe = np.zeros((num_days, d_model))
+    pe[:, 0::2] = np.sin(days * div_term)
+    pe[:, 1::2] = np.cos(days * div_term)
+    
+    return pe
+
+    
+
 
 # Training function
 def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_scheduler, optimizer, lr_scheduler, save_model_path=None):
