@@ -108,14 +108,20 @@ def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_s
 
         # print validation loss
         model.eval()
-        val_loss = 0.0
-        for batch in val_dataloader:
-            noisy_input, noise, nan_mask, timesteps = prep_sample(batch, noise_scheduler, device)
-            noise_pred = model(noisy_input, timesteps, return_dict=False)[0]
-            loss = loss_fn(noise_pred[~nan_mask], noise[~nan_mask])
-            val_loss += loss.item()
-        val_losses.append(val_loss / len(val_dataloader))
-        print(f"Validation Loss: {val_loss / len(val_dataloader):.6f}")
+        t_tot = noise_scheduler.config.num_train_timesteps
+        val_losses_t = []
+        for t in range(0, t_tot, t_tot//10):
+            val_loss = 0.0
+            for batch in val_dataloader:
+                timesteps = torch.full((batch[0].shape[0],), t, device=device, dtype=torch.long)
+                noisy_input, noise, nan_mask, timesteps = prep_sample(batch, noise_scheduler, timesteps, device)
+                noise_pred = model(noisy_input, timesteps, return_dict=False)[0]
+                loss = loss_fn(noise_pred[~nan_mask], noise[~nan_mask])
+                val_loss += loss.item()
+            val_losses_t.append(val_loss / len(val_dataloader))
+            print(f"Validation Loss for timestep {t}: {val_loss / len(val_dataloader):.6f}")
+        print(f"Epoch {epoch+1} Validation Loss: {np.mean(val_losses_t):.6f}")
+        val_losses.append(val_losses_t)
 
         if save_model_path and (epoch+1) % 10 == 0:
             torch.save(model.state_dict(), save_model_path+f"e_{epoch+1}.pt")
@@ -123,14 +129,12 @@ def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_s
     return model, train_losses, val_losses
 
 
-def prep_sample(batch, noise_scheduler, device):
+def prep_sample(batch, noise_scheduler, timesteps, device):
     batch = batch[0].to(device)
     target = batch[:, 0:1, :]
     context = batch[:, 1:, :]
-
+    
     noise = torch.randn_like(target).to(device).float()
-    timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (batch.shape[0],), device=device).long()
-
     # Replace nan with zeros
     nan_mask = torch.isnan(target)
     target = torch.where(nan_mask, torch.zeros_like(target), target)
