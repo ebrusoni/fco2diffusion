@@ -1,11 +1,12 @@
 import sys
 from pathlib import Path
+
+src_path = Path.home() / "work" / "fco2diffusion" / "src"
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
     
 renko=False
 if renko:
-    src_path = Path.home() / "work" / "fco2diffusion" / "src"
-    if str(src_path) not in sys.path:
-        sys.path.insert(0, str(src_path))
     DATA_PATH = '/home/jovyan/work/datapolybox/'
 else:
     DATA_PATH = '../data/training_data/'
@@ -74,11 +75,8 @@ def df_to_ds(df,):
 
 def prep_data(df, predictors):
     """prepare data for training"""
+    ds_raw = df_to_ds(df)
     col_map = dict(zip(df.columns, range(len(df.columns))))
-    print(col_map)
-    num_bins = df.index.get_level_values('bin').unique().shape[0]
-    num_segments = df.index.get_level_values('segment').unique().shape[0]
-    ds_raw = df.values.reshape(len(df.columns), num_segments, num_bins)
     
     # fill missing sss_cci values with salt_soda values
     logging.info("Filling missing sss_cci values with salt_soda values")
@@ -94,7 +92,7 @@ def prep_data(df, predictors):
     predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'year', 'lon', 'lat']
     logging.info("predictors: %s", predictors)
     ds_map = dict(zip(predictors, range(1, len(predictors) + 1)))
-    X, y = filter_nans(ds_raw[:, :, :-1], y[:, :-1], predictors, col_map)
+    X, y = filter_nans(ds_raw[:, :, :], y[:, :], predictors, col_map)
     print(X.shape, y.shape)
 
     # assert np.apply_along_axis(lambda x: np.isnan(x).all(), 1, y).sum() == 0
@@ -167,13 +165,17 @@ torch.manual_seed(0)
 # load data and filter out nans in the context variables
 # df = pd.read_parquet('../data/training_data/traindf_100km.pq')
 logging.info("Training with larger random dataset")
-df = pd.read_parquet(DATA_PATH+'df_100km_random.pq')
+df_train = pd.read_parquet(DATA_PATH+'traindf_100km_random_reshaped.pq')
+df_val = pd.read_parquet(DATA_PATH+'valdf_100km_random_reshaped.pq')
+df_2021 = pd.read_parquet(DATA_PATH+'df_100km_random_reshaped_2021.pq')
 logging.info("Using already separated train and validation datasets")
 #df_train = pd.read_parquet('/home/jovyan/work/datapolybox/traindf_100km_random.pq')
 #df_val = pd.read_parquet('/home/jovyan/work/datapolybox/valdf_100km_random.pq')
 predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'year', 'lon', 'lat']
-ds = prep_data(df, predictors)
-# val_ds = prep_data(df_val, predictors)
+train_ds = prep_data(df_train, predictors)
+val_ds = prep_data(df_val, predictors)
+val_ds_2021 = prep_data(df_2021, predictors)
+val_ds = np.concatenate([val_ds, val_ds_2021], axis = 0)
 
 
 # train_ds = ds[train_ds_indices]
@@ -181,10 +183,10 @@ ds = prep_data(df, predictors)
 
 # split into training and validation
 # shuffle the training data
-logging.info("Shuffling the dataset before splitting")
-np.random.shuffle(ds)
-train_ds = ds[:int(0.9 * ds.shape[0])]
-val_ds = ds[int(0.9 * ds.shape[0]):]
+#logging.info("Shuffling the dataset before splitting")
+#np.random.shuffle(ds)
+#train_ds = ds[:int(0.9 * ds.shape[0])]
+#val_ds = ds[int(0.9 * ds.shape[0]):]
 print(f"train_ds shape: {train_ds.shape}")
 print(f"val_ds shape: {val_ds.shape}")
 logging.info(f"train_ds shape: {train_ds.shape}")
@@ -285,7 +287,7 @@ model = UNet2DModelWrapper(**model_params)
 timesteps = 1000
 # model = MLP(**model_params, num_timesteps=timesteps)
 
-num_epochs = 200
+num_epochs = 300
 
 optimizer = optim.AdamW(model.parameters(), lr=lr)
 
