@@ -1,3 +1,15 @@
+import sys
+from pathlib import Path
+    
+renko=False
+if renko:
+    src_path = Path.home() / "work" / "fco2diffusion" / "src"
+    if str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
+    DATA_PATH = '/home/jovyan/work/datapolybox/'
+else:
+    DATA_PATH = '../data/training_data/'
+    
 import pandas as pd
 import numpy as np
 from fco2dataset.ucruise import filter_nans
@@ -18,9 +30,9 @@ from scipy.ndimage import gaussian_filter1d
 import logging
 
 lr = 5e-4
-batch_size = 64
+batch_size = 128
 save_dir = f'../models/unet2d_{batch_size}_{lr}/'
-# create directory if it does not exist
+ #create directory if it does not exist
 import os
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
@@ -34,6 +46,31 @@ logging.basicConfig(
 
 logging.info("------------ Starting training ------------------")
 
+def load_checkpoint(path, model, optimizer, scheduler):
+    logging.info(f"Loading checkpoint from {path}")
+    # Load checkpoint
+    checkpoint = torch.load(path)
+
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+    if scheduler and checkpoint['scheduler_state_dict']:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+    epoch = checkpoint['epoch'] + 1  # Continue from next epoch
+    train_losses = checkpoint['train_losses']
+    val_losses = checkpoint['val_losses']
+    logging.info(f'starting from epoch {epoch + 1}')
+    return model, optimizer, scheduler, epoch, train_losses, val_losses
+
+def df_to_ds(df,):
+    num_bins = df.index.get_level_values('bin').unique().shape[0]
+    num_segments = df.index.get_level_values('segment').unique().shape[0]
+    ds_reconstructed = df.values.reshape(len(df.columns), num_segments, num_bins)
+    ds_reconstructed = np.zeros((len(df.columns), num_segments, num_bins))
+    for i, col in enumerate(df.columns):
+        ds_reconstructed[i, :, :] = df[col].values.reshape(num_segments, num_bins)
+    return ds_reconstructed
 
 def prep_data(df, predictors):
     """prepare data for training"""
@@ -114,9 +151,9 @@ def prep_data(df, predictors):
     # embed time feature
     # sinemb = sinusoidal_day_embedding(num_days=365, d_model=64)
     # ix_day = ds_map['day_of_year']
-    # # clip to 0-364
+    # clip to 0-364
     # ds[:, ix_day, :] = np.clip(ds[:, ix_day, :] - 1, 0, 364)
-    # ds[:, ix_day, :] = sinemb[ds[:, ix_day, 0].astype(int), :] # just take the first bin for the time feature
+    #ds[:, ix_day, :] = sinemb[ds[:, ix_day, 0].astype(int), :] # just take the first bin for the time feature
     
     # # remove year feature
     ds = np.delete(ds, [ix_year, lat_col, lon_col], 1)
@@ -128,9 +165,15 @@ np.random.seed(0)
 torch.manual_seed(0)
 
 # load data and filter out nans in the context variables
-df = pd.read_parquet('../data/training_data/traindf_100km.pq')
+# df = pd.read_parquet('../data/training_data/traindf_100km.pq')
+logging.info("Training with larger random dataset")
+df = pd.read_parquet(DATA_PATH+'df_100km_random.pq')
+logging.info("Using already separated train and validation datasets")
+#df_train = pd.read_parquet('/home/jovyan/work/datapolybox/traindf_100km_random.pq')
+#df_val = pd.read_parquet('/home/jovyan/work/datapolybox/valdf_100km_random.pq')
 predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'year', 'lon', 'lat']
 ds = prep_data(df, predictors)
+# val_ds = prep_data(df_val, predictors)
 
 
 # train_ds = ds[train_ds_indices]
@@ -188,8 +231,8 @@ print(f"Validation data mean chl: {np.nanmean(val_ds[:, 3, :])}, std: {np.nanstd
 # print(f"Validation data mean day: {np.nanmean(val_ds[:, 5, :])}, std: {np.nanstd(val_ds[:, 5, :])}")
 
 # save the training and validation data
-np.save('../data/training_data/train_ds.npy', train_ds)
-np.save('../data/training_data/val_ds.npy', val_ds)
+np.save('../train_ds.npy', train_ds)
+np.save('../val_ds.npy', val_ds)
 
 print(f"train_ds shape: {train_ds.shape}")
 print(f"val_ds shape: {val_ds.shape}")
@@ -242,7 +285,7 @@ model = UNet2DModelWrapper(**model_params)
 timesteps = 1000
 # model = MLP(**model_params, num_timesteps=timesteps)
 
-num_epochs = 20
+num_epochs = 200
 
 optimizer = optim.AdamW(model.parameters(), lr=lr)
 
@@ -251,8 +294,14 @@ val_dataset = TensorDataset(torch.tensor(val_ds))
 train_dataloader = data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 val_dataloader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
+#checkpoint_path = ""
+epoch = 0
+train_losses_old = []
+val_losses_old = []
+#model, optimizer, scheduler, epoch, train_losses_old, val_losses_old = load_checkpoint(checkpoint_path, model, optimizer, lr_scheuduler)
+
 lr_params = {
-    "num_warmup_steps": 0.3 * num_epochs * len(train_dataloader), 
+    "num_warmup_steps": 0.05 * num_epochs * len(train_dataloader), 
     "num_training_steps": num_epochs * len(train_dataloader)
     }
 lr_scheduler = get_cosine_schedule_with_warmup(optimizer, **lr_params)
@@ -281,7 +330,7 @@ logging.info("All parameters: %s", param_dict)
 
 
 model, train_losses, val_losses = train_diffusion(model,
-                                                  num_epochs=num_epochs, 
+                                                  num_epochs=num_epochs - epoch, 
                                                   optimizer=optimizer, 
                                                   lr_scheduler=lr_scheduler, 
                                                   noise_scheduler=noise_scheduler, 
@@ -290,10 +339,12 @@ model, train_losses, val_losses = train_diffusion(model,
                                                   save_model_path=save_dir)
 
 # save the model parameters to a json file
-with open(save_dir+'hyperparameters.json', 'w') as f:
+with open(save_dir +'hyperparameters.json', 'w') as f:
     param_dict = json.dumps(param_dict, indent=4)
     f.write(param_dict)
-
+    
+train_losses += train_losses_old
+val_losses += val_losses_old
 with open(save_dir+'losses.json', 'w') as f:
     losses_dict = {
         'train_losses': train_losses,
