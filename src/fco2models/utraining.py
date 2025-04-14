@@ -126,6 +126,19 @@ def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_s
         if save_model_path and (epoch+1) % 10 == 0:
             torch.save(model.state_dict(), save_model_path+f"e_{epoch+1}.pt")
 
+    # save model checkpoint
+    if save_model_path:
+        # Save checkpoint
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': lr_scheduler.state_dict() if lr_scheduler else None,
+            'rng_state': torch.get_rng_state(),
+            'cuda_rng_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+            'train_losses': train_losses,
+            'val_losses': val_losses,
+        }, save_model_path+f"final_model_e_{num_epochs}.pt")
     return model, train_losses, val_losses
 
 
@@ -147,41 +160,50 @@ def prep_sample(batch, noise_scheduler, timesteps, device):
 
 
 
-def full_denoise(model, noise_scheduler, context_loader, n_samples=10):
+def full_denoise(model, noise_scheduler, context_loader, jump=None):
     """full denoising loop for diffusion model"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}")
     model.to(device)
     samples = []
-    for ix in range(n_samples):
-        print(ix)
-        batch_sample = []
-        # tdqm progress bar for context_loader
-        context_loader = tqdm(context_loader, desc=f"Sample {ix+1}/{n_samples}")
-        for (bno, context_batch) in enumerate(context_loader):
-            context = context_batch.to(device)
-            # context = context.unsqueeze(0)
-            sample = torch.randn((context.shape[0], 1, context.shape[2])).to(device)
-            mask = torch.ones_like(sample).float().to(device)
-            sample_context = torch.zeros(context.shape[0], context.shape[1] + 2, context.shape[2]).to(device)
+    # tdqm progress bar for context_loader
+    context_loader = tqdm(context_loader, desc=f"Inference")
+    for context_batch in context_loader:
+        context = context_batch.to(device)
+        # context = context.unsqueeze(0)
+        sample = torch.randn((context.shape[0], 1, context.shape[2])).to(device)
+        mask = torch.ones_like(sample).float().to(device)
+        sample_context = torch.zeros(context.shape[0], context.shape[1] + 2, context.shape[2]).to(device)
+        sample_context[:, 0:1, :] = sample
+        sample_context[:, 1:-1, :] = context
+        sample_context[:, -1:, :] = mask
+        if jump is not None:
+            timestep = noise_scheduler.timesteps[::jump]
+        else:
+            timestep = noise_scheduler.timesteps
+        for t in timestep:
+            # concat noise, context and mask
             sample_context[:, 0:1, :] = sample
-            sample_context[:, 1:-1, :] = context
-            sample_context[:, -1:, :] = mask
-            for i, t in enumerate(noise_scheduler.timesteps):
-                # concat noise, context and mask
-                sample_context[:, 0:1, :] = sample
-                # Get model pred
-                with torch.no_grad():
-                    residual = model(sample_context, t, return_dict=False)[0]
+            # Get model pred
+            with torch.no_grad():
+                residual = model(sample_context, t, return_dict=False)[0]
+
+            output_scheduler = noise_scheduler.step(residual, t, sample)
+            if jump is not None:
+                x_0 = output_scheduler.pred_original_sample
+                if t < jump:
+                    sample = x_0
+                else:
+                    sample = noise_scheduler.add_noise(x_0, torch.randn_like(sample), t - jump)
+            else:
                 # Update sample with step
-                sample = noise_scheduler.step(residual, t, sample).prev_sample
-                # end_time = time.time()
-            context_batch.detach()
-            batch_sample.append(sample.detach().cpu())
+                sample = output_scheduler.prev_sample
+            # end_time = time.time()
             # update progress bar
-            context_loader.set_postfix({"Batch":  bno+1})
-        batch_sample = torch.cat(batch_sample, dim=0)
-        samples.append(batch_sample)
+            context_loader.set_postfix({"timestep":  t})
+        context_batch.detach()
+        samples.append(sample.detach().cpu())
+    samples = torch.cat(samples, dim=0)
 
     return np.array(samples)
 
