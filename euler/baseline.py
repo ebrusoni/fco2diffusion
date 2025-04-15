@@ -236,17 +236,18 @@ def train_baseline(model, num_epochs, old_epoch, train_dataloader, val_dataloade
 
                 nan_mask = torch.isnan(target)
                 # replace nan with zeros
-                target = torch.where(nan_mask, torch.zeros_like(target), target)
+                target = torch.where(nan_mask, torch.zeros_like(target), target).float()
 
                 #concatenate the noisy target with the context and the mask
                 input = torch.cat([context, (~nan_mask).float()], dim=1)
                 input = input.to(device).float()
 
-                mean_pred = model(input, torch.zeros(batch.shape[0], ), return_dict=False)[0]
+                mean_pred = model(input, torch.zeros(batch.shape[0], ).to(device), return_dict=False)[0]
 
                 # Calculate the loss
                 val_loss += loss_fn(mean_pred[~nan_mask], target[~nan_mask]).item()
         val_losses.append(val_loss / len(val_dataloader))
+        print(f"Validation Loss: {val_loss / len(val_dataloader):.6f}")
 
         if save_model_path and (epoch+1) % 10 == 0:
             torch.save(model.state_dict(), save_model_path+f"e_{epoch+1}.pt")

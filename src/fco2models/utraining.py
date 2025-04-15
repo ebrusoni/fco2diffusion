@@ -208,6 +208,109 @@ def full_denoise(model, noise_scheduler, context_loader, jump=None):
     return np.array(samples)
 
 
+def df_to_ds(df,):
+    num_bins = df.index.get_level_values('bin').unique().shape[0]
+    num_segments = df.index.get_level_values('segment').unique().shape[0]
+    ds_reconstructed = df.values.reshape(len(df.columns), num_segments, num_bins)
+    ds_reconstructed = np.zeros((len(df.columns), num_segments, num_bins))
+    for i, col in enumerate(df.columns):
+        ds_reconstructed[i, :, :] = df[col].values.reshape(num_segments, num_bins)
+    return ds_reconstructed
 
-# plot final samples
+import logging as log
+from fco2dataset.ucruise import filter_nans
+def prep_data(df, predictors, logging=None):
+    """prepare data for training"""
+    
+    if logging is None:
+        # log to stdout
+        logging = log
+        log.basicConfig(
+            level=log.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[log.StreamHandler()]
+        )
+    
+    ds_raw = df_to_ds(df)
+    col_map = dict(zip(df.columns, range(len(df.columns))))
+    
+    # fill missing sss_cci values with salt_soda values
+    logging.info("Filling missing sss_cci values with salt_soda values")
+    salt_soda = ds_raw[col_map['salt_soda']]
+    sss_cci = ds_raw[col_map['sss_cci']]
+    mask = np.isnan(sss_cci)
+    ds_raw[col_map['sss_cci'], mask] = salt_soda[np.isnan(sss_cci)]
+    
+    y = ds_raw[0]
+    # logging.info("Checking for nans in y")
+    # assert np.apply_along_axis(lambda x: np.isnan(x).all(), 1, y).sum() == 0
+    logging.info("predictors: %s", predictors)
+    ds_map = dict(zip(predictors, range(1, len(predictors) + 1)))
+    X, y = filter_nans(ds_raw[:, :, :], y[:, :], predictors, col_map)
+    print(X.shape, y.shape)
+
+    # assert np.apply_along_axis(lambda x: np.isnan(x).all(), 1, y).sum() == 0
+    
+    print(X.shape, y[np.newaxis].shape)
+    assert np.isnan(X).sum() == 0
+    n_samples = X.shape[1]
+    n_dims = X.shape[2]
+    ds = np.zeros((n_samples, X.shape[0] + 1, n_dims))
+    
+    ds[:, 0, :] = y
+    for i in range(X.shape[0]):
+        ds[:, i + 1, :] = X[i]
+    
+    # clip 0th channel to 0-500
+    print("number of fco2 measurements greater than 500: ", np.sum(ds[:, 0, :] > 500))
+    logging.info("clipping fco2 values to 0-500")
+    ds[:, 0, :] = np.clip(ds[:, 0, :], 0, 500)
+    
+    # keep only data in atlantic ocean
+    
+    # lat_col = ds_map['lat']
+    # lon_col = ds_map['lon']
+    
+    # lat_low = 19
+    # lon_low = -86 
+    # lat_high = 62
+    # lon_high = 18
+    
+    # def normalize_lon(lon):
+    #     return (lon + 180) % 360 - 180
+    
+    # filtered_indices = np.where(
+    #     (ds[:, lat_col, 0] >= lat_low) & (ds[:, lat_col, 0] <= lat_high) &
+    #     (normalize_lon(ds[:, lon_col, 0]) >= lon_low) & (normalize_lon(ds[:, lon_col, 0]) <= lon_high)
+    # )[0]
+    
+    # logging.info(f"Filtered samples by lat/lon: {len(filtered_indices)}")
+    # ds = ds[filtered_indices]
+    # print(f"Filtered dataset shape: {ds.shape}")
+    
+    # smooth salinity data
+    # logging.info("Smoothing salinity data")
+    # ix_sss = ds_map['sss_cci']
+    # ds[:, ix_sss, :] = gaussian_filter1d(ds[:, ix_sss, :], sigma=1, axis=1)
+    
+    
+    # training dataset consits if sampples from 1982 to 2020
+    # print((ds[:, 5, 0] // 10000)[:10])
+    # ix_year = ds_map['year']
+    # train_ds_indices = ds[:, ix_year, 0] < 2021
+    # val_ds_indices = ds[:, ix_year, 0] == 2021
+    
+    if 'day_of_year' in ds_map:
+        ix_day = ds_map['day_of_year']
+        # embed time feature
+        sinemb = sinusoidal_day_embedding(num_days=365, d_model=64)
+        ix_day = ds_map['day_of_year']
+        # clip to 0-364
+        ds[:, ix_day, :] = np.clip(ds[:, ix_day, :] - 1, 0, 364)
+        ds[:, ix_day, :] = sinemb[ds[:, ix_day, 0].astype(int), :] # just take the first bin for the time feature
+    
+    # # remove year feature
+    # ds = np.delete(ds, [ix_year, lat_col, lon_col], 1)
+    # logging.info("Removed year, lat, lon features")
+    return ds
 
