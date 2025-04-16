@@ -217,6 +217,7 @@ def df_to_ds(df,):
         ds_reconstructed[i, :, :] = df[col].values.reshape(num_segments, num_bins)
     return ds_reconstructed
 
+
 import logging as log
 from fco2dataset.ucruise import filter_nans
 def prep_data(df, predictors, logging=None):
@@ -266,51 +267,24 @@ def prep_data(df, predictors, logging=None):
     logging.info("clipping fco2 values to 0-500")
     ds[:, 0, :] = np.clip(ds[:, 0, :], 0, 500)
     
-    # keep only data in atlantic ocean
-    
-    # lat_col = ds_map['lat']
-    # lon_col = ds_map['lon']
-    
-    # lat_low = 19
-    # lon_low = -86 
-    # lat_high = 62
-    # lon_high = 18
-    
-    # def normalize_lon(lon):
-    #     return (lon + 180) % 360 - 180
-    
-    # filtered_indices = np.where(
-    #     (ds[:, lat_col, 0] >= lat_low) & (ds[:, lat_col, 0] <= lat_high) &
-    #     (normalize_lon(ds[:, lon_col, 0]) >= lon_low) & (normalize_lon(ds[:, lon_col, 0]) <= lon_high)
-    # )[0]
-    
-    # logging.info(f"Filtered samples by lat/lon: {len(filtered_indices)}")
-    # ds = ds[filtered_indices]
-    # print(f"Filtered dataset shape: {ds.shape}")
-    
-    # smooth salinity data
-    # logging.info("Smoothing salinity data")
-    # ix_sss = ds_map['sss_cci']
-    # ds[:, ix_sss, :] = gaussian_filter1d(ds[:, ix_sss, :], sigma=1, axis=1)
-    
-    
-    # training dataset consits if sampples from 1982 to 2020
-    # print((ds[:, 5, 0] // 10000)[:10])
-    # ix_year = ds_map['year']
-    # train_ds_indices = ds[:, ix_year, 0] < 2021
-    # val_ds_indices = ds[:, ix_year, 0] == 2021
+
+    if 'lat' in predictors:
+        lat_col = ds_map['lat']
+        logging.info("add latitude feature")
+        # round latitude column to 1 degree and shift to range 0-180
+        ds[:, lat_col, :] = (np.rint(ds[:, lat_col, :]) + 90).astype(int)
+        sinemb_lat = sinusoidal_day_embedding(num_days=181, d_model=64)
+        ds[:, lat_col, :] = sinemb_lat[ds[:, lat_col, 0].astype(int), :] # take first bin for latitude feature
     
     if 'day_of_year' in ds_map:
         ix_day = ds_map['day_of_year']
+        logging.info("add day of year feature")
         # embed time feature
-        sinemb = sinusoidal_day_embedding(num_days=365, d_model=64)
+        sinemb_day = sinusoidal_day_embedding(num_days=365, d_model=64)
         ix_day = ds_map['day_of_year']
         # clip to 0-364
         ds[:, ix_day, :] = np.clip(ds[:, ix_day, :] - 1, 0, 364)
-        ds[:, ix_day, :] = sinemb[ds[:, ix_day, 0].astype(int), :] # just take the first bin for the time feature
-    
-    # # remove year feature
-    # ds = np.delete(ds, [ix_year, lat_col, lon_col], 1)
-    # logging.info("Removed year, lat, lon features")
+        ds[:, ix_day, :] = sinemb_day[ds[:, ix_day, 0].astype(int), :] # just take the first bin for the time feature
+
     return ds
 

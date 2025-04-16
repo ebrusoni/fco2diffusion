@@ -117,6 +117,11 @@ for i in range(train_ds.shape[1]):
     train_ds[:, i, :] = normalize(train_ds[:, i, :], train_maxs[i], train_mins[i], mode)
     val_ds[:, i, :] = normalize(val_ds[:, i, :], train_maxs[i], train_mins[i], mode)
 
+# print mins and maxs of the data
+for i in range(train_ds.shape[1]):
+    print(f"train_ds {i} min: {np.nanmin(train_ds[:, i, :])}, max: {np.nanmax(train_ds[:, i, :])}")
+    print(f"val_ds {i} min: {np.nanmin(val_ds[:, i, :])}, max: {np.nanmax(val_ds[:, i, :])}")
+
 train_dataset = TensorDataset(torch.tensor(train_ds))
 val_dataset = TensorDataset(torch.tensor(val_ds))
 train_dataloader = data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -161,6 +166,7 @@ param_dict = {
     "num_epochs": num_epochs,
     "lr": lr,
     "optimizer": optimizer.__class__.__name__,
+    "predictors": predictors,
     "train_means": train_means,
     "train_stds": train_stds,
     "train_mins": train_mins,
@@ -283,8 +289,8 @@ with open(save_dir +'hyperparameters.json', 'w') as f:
     param_dict = json.dumps(param_dict, indent=4)
     f.write(param_dict)
     
-train_losses += train_losses_old
-val_losses += val_losses_old
+train_losses_old += train_losses
+val_losses_old += val_losses
 with open(save_dir+'losses.json', 'w') as f:
     losses_dict = {
         'train_losses': train_losses,
