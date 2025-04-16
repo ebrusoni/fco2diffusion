@@ -275,6 +275,14 @@ def prep_data(df, predictors, logging=None):
         ds[:, lat_col, :] = (np.rint(ds[:, lat_col, :]) + 90).astype(int)
         sinemb_lat = sinusoidal_day_embedding(num_days=181, d_model=64)
         ds[:, lat_col, :] = sinemb_lat[ds[:, lat_col, 0].astype(int), :] # take first bin for latitude feature
+
+    if 'lon' in predictors:
+        lat_col = ds_map['lon']
+        logging.info("add longitude feature")
+        # round latitude column to 1 degree and shift to range 0-180
+        ds[:, lat_col, :] = (np.rint(ds[:, lat_col, :])).astype(int)
+        sinemb_lon = sinusoidal_day_embedding(num_days=361, d_model=64)
+        ds[:, lat_col, :] = sinemb_lon[ds[:, lat_col, 0].astype(int), :] # take first bin for latitude feature
     
     if 'day_of_year' in ds_map:
         ix_day = ds_map['day_of_year']

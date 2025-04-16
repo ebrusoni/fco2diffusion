@@ -79,7 +79,7 @@ df_2021 = pd.read_parquet(DATA_PATH+'df_100km_random_reshaped_2021.pq')
 logging.info("Using already separated train and validation datasets")
 
 
-predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'year', 'lon', 'lat']
+predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'ssh_sla', 'mld_dens_soda', 'lon', 'lat', 'day_of_year']
 train_ds = prep_data(df_train, predictors, logging=logging)
 val_ds = prep_data(df_val, predictors, logging=logging)
 val_ds_2021 = prep_data(df_2021, predictors, logging=logging)
@@ -132,7 +132,7 @@ layers_per_block = 2
 down_block_types = ('DownBlock2D', 'DownBlock2D')
 up_block_types = ('UpBlock2D', 'UpBlock2D')
 model_params = {
-    "sample_size": (4, 64),
+    "sample_size": (10, 64),
     "in_channels": 1,
     "out_channels": 1,
     "layers_per_block": layers_per_block,

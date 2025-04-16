@@ -72,7 +72,9 @@ class UNet2DModelWrapper(UNet2DModel):
         # print(x.shape)
         # current shape (batch_size, channels, bins)
         # zero array with next greatest power of 2 as channels
-        channels = 8
+        # channels = 16
+        # next_log = torch.ceil(torch.log2(torch.tensor(x.shape[1]))).item()
+        channels = 16#int(2**next_log)
         temp = torch.zeros((x.shape[0], 1, channels, x.shape[2]), device=x.device)
         temp[:, 0, :x.shape[1], :] = x
         x = temp
