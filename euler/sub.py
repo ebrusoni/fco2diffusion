@@ -219,6 +219,10 @@ param_dict = {
     "mode": mode,
     }
 logging.info("All parameters: %s", param_dict)
+# save the model parameters to a json file
+with open(save_dir +'hyperparameters.json', 'w') as f:
+    param_dict = json.dumps(param_dict, indent=4)
+    f.write(param_dict)
 
 
 model, train_losses, val_losses = train_diffusion(model,
@@ -230,10 +234,6 @@ model, train_losses, val_losses = train_diffusion(model,
                                                   val_dataloader=val_dataloader,
                                                   save_model_path=save_dir)
 
-# save the model parameters to a json file
-with open(save_dir +'hyperparameters.json', 'w') as f:
-    param_dict = json.dumps(param_dict, indent=4)
-    f.write(param_dict)
     
 train_losses_old += train_losses
 val_losses_old += val_losses
