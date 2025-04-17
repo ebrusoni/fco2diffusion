@@ -209,10 +209,9 @@ def full_denoise(model, noise_scheduler, context_loader, jump=None):
 
 
 def df_to_ds(df,):
-    num_bins = df.index.get_level_values('bin').unique().shape[0]
-    num_segments = df.index.get_level_values('segment').unique().shape[0]
-    ds_reconstructed = df.values.reshape(len(df.columns), num_segments, num_bins)
-    ds_reconstructed = np.zeros((len(df.columns), num_segments, num_bins))
+    num_bins = df.index.get_level_values('bin').nunique()
+    num_segments = df.index.get_level_values('segment').nunique()
+    ds_reconstructed = np.zeros((len(df.columns), num_segments, num_bins), dtype=np.float32)
     for i, col in enumerate(df.columns):
         ds_reconstructed[i, :, :] = df[col].values.reshape(num_segments, num_bins)
     return ds_reconstructed

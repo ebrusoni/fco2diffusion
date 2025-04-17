@@ -73,9 +73,15 @@ def load_checkpoint(path, model, optimizer, scheduler):
     return model, optimizer, scheduler, epoch, train_losses, val_losses
 
 logging.info("Training with larger random dataset")
-df_train = pd.read_parquet(DATA_PATH+'traindf_100km_random_reshaped.pq')
-df_val = pd.read_parquet(DATA_PATH+'valdf_100km_random_reshaped.pq')
-df_2021 = pd.read_parquet(DATA_PATH+'df_100km_random_reshaped_2021.pq')
+df_train = pd.read_parquet(DATA_PATH+'traindf_100km_xco2.pq')
+# subtract xco2 column from fco2rec_uatm column
+df_train['fco2rec_uatm'] = df_train['fco2rec_uatm'] - df_train['xco2']
+df_val = pd.read_parquet(DATA_PATH+'valdf_100km_xco2.pq')
+# subtract xco2 column from fco2rec_uatm column
+df_val['fco2rec_uatm'] = df_val['fco2rec_uatm'] - df_val['xco2']
+df_2021 = pd.read_parquet(DATA_PATH+'df_100km_xco2_2021.pq')
+# subtract xco2 column from fco2rec_uatm column
+df_2021['fco2rec_uatm'] = df_2021['fco2rec_uatm'] - df_2021['xco2']
 logging.info("Using already separated train and validation datasets")
 
 
