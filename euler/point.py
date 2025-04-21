@@ -39,7 +39,7 @@ torch.cuda.manual_seed(0)
 
 
 lr = 5e-4
-batch_size = 512
+batch_size = 1024
 save_dir = f'../models/point/'
  #create directory if it does not exist
 import os
@@ -116,12 +116,12 @@ for i in range(train_ds.shape[1]):
     train_mins.append(np.nanmin(train_ds[:, i, :]))
     train_maxs.append(np.nanmax(train_ds[:, i, :]))
 
-mode = 'min_max'
+mode = 'mean_std'
 logging.info(f"Normalizing data using {mode} normalization")
 # normalize the data
 for i in range(train_ds.shape[1]):
-    train_ds[:, i, :] = normalize(train_ds[:, i, :], train_maxs[i], train_mins[i], mode)
-    val_ds[:, i, :] = normalize(val_ds[:, i, :], train_maxs[i], train_mins[i], mode)
+    train_ds[:, i, :] = normalize(train_ds[:, i, :], train_means[i], train_stds[0], mode)
+    val_ds[:, i, :] = normalize(val_ds[:, i, :], train_means[i], train_stds[0], mode)
 
 # print mins and maxs of the data
 for i in range(train_ds.shape[1]):
@@ -157,13 +157,21 @@ class  MLPModel(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, hidden_dim // 2)
         self.fc3 = nn.Linear(hidden_dim // 2, output_dim)
         self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.1)
+        self.batchnorm2 = nn.BatchNorm1d(hidden_dim)
+        self.batchnorm3 = nn.BatchNorm1d(hidden_dim // 2)
+
 
     
     def forward(self, x):
         x = self.fc1(x)
         x = self.relu(x)
+        x = self.dropout(x)
+        x = self.batchnorm2(x)
         x = self.fc2(x)
         x = self.relu(x)
+        x = self.dropout(x)
+        x = self.batchnorm3(x)
         x = self.fc3(x)
         return x
     
@@ -173,7 +181,7 @@ model_params = {
     "output_dim": 1,
 }
 model = MLPModel(**model_params)
-num_epochs = 5
+num_epochs = 10
 optimizer = optim.AdamW(model.parameters(), lr=lr)
 
 #checkpoint_path = ""
