@@ -84,6 +84,48 @@ class UNet2DModelWrapper(UNet2DModel):
         return (pred.squeeze(1)[:, 0:1, :],)
     
 
+class ConvNet(nn.Module):
+    def __init__(self, channels_in, input_dim=64, kernel_size=3):
+        """
+        Parametrizable Convolutional Neural Network (ConvNet)
+        
+        Args:
+            channels_in (int): Number of input channels.
+            input_dim (int): Dimension of the input features. Default is 64.
+        """
+        super(ConvNet, self).__init__()
+        
+        # Store model parameters
+        self.input_dim = input_dim
+        self.channels_in = channels_in
+        self.channels_out = 1
+
+        self.channels1 = 128
+        self.channels2 = 64
+        
+        #self.dropout = nn.Dropout(0.1)
+        self.relu = nn.ReLU()
+        self.conv1 = nn.Conv1d(channels_in, self.channels1, kernel_size=kernel_size, padding='same')
+        self.conv2 = nn.Conv1d(self.channels1, self.channels2, kernel_size=kernel_size, padding='same')
+        self.conv3 = nn.Conv1d(self.channels2, 1, kernel_size=kernel_size, padding='same')
+        self.dropout = nn.Dropout(0.1)
+        self.batchnorm1 = nn.BatchNorm1d(self.channels1)
+        self.batchnorm2 = nn.BatchNorm1d(self.channels2)
+
+    def forward(self, x, t, return_dict=False):
+        x = self.conv1(x)
+        x = self.batchnorm1(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+        x = self.conv2(x)
+        x = self.batchnorm2(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+        x = self.conv3(x)
+
+        return (x, None)
+
+
 
     
 

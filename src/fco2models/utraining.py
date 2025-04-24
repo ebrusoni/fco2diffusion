@@ -219,79 +219,237 @@ def df_to_ds(df,):
 
 import logging as log
 from fco2dataset.ucruise import filter_nans
-def prep_data(df, predictors, logging=None):
-    """prepare data for training"""
+def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False):
+    """prepare data for training (only for models working with segments)
+         - filters out nans from all predictor variables
+         - adds sinusoidal embeddings for lat, lon and day of year if lat, lon and day_of_year are in predictors
+         - adds a mask for the first column (target variable) if with_mask is True"""
     
-    if logging is None:
+    logging = make_logger(logging)
+    dss = []
+    for df in dfs:
+    
+        ds_raw = df_to_ds(df)
+        col_map = dict(zip(df.columns, range(len(df.columns))))
+    
+    
+        logging.info("predictors: %s", predictors)
+        ds_map = dict(zip(predictors, range(1, len(predictors) + 1)))
+        yX = filter_nans(ds_raw, predictors, col_map)
+        print(f"yX shape: {yX.shape}")
+    
+        # assert np.apply_along_axis(lambda x: np.isnan(x).all(), 1, y).sum() == 0
+        
+        assert np.isnan(yX[1:, :, :]).sum() == 0
+        n_samples = yX.shape[1]
+        n_dims = yX.shape[2]
+        ds = np.zeros((n_samples, yX.shape[0], n_dims))
+        
+        for i in range(yX.shape[0]):
+            ds[:, i, :] = yX[i]
+        
+        if 'lat' in predictors:
+            lat_col = ds_map['lat']
+            logging.info("add latitude feature")
+            # round latitude column to 1 degree and shift to range 0-180
+            ds[:, lat_col, :] = (np.rint(ds[:, lat_col, :]) + 90).astype(int)
+            sinemb_lat = sinusoidal_day_embedding(num_days=181, d_model=64)
+            ds[:, lat_col, :] = sinemb_lat[ds[:, lat_col, 0].astype(int), :] # take first bin for latitude feature
+    
+        if 'lon' in predictors:
+            lat_col = ds_map['lon']
+            logging.info("add longitude feature")
+            # round latitude column to 1 degree and shift to range 0-180
+            ds[:, lat_col, :] = (np.rint(ds[:, lat_col, :])).astype(int)
+            sinemb_lon = sinusoidal_day_embedding(num_days=361, d_model=64)
+            ds[:, lat_col, :] = sinemb_lon[ds[:, lat_col, 0].astype(int), :] # take first bin for latitude feature
+        
+        if 'day_of_year' in ds_map:
+            ix_day = ds_map['day_of_year']
+            logging.info("add day of year feature")
+            # embed time feature
+            sinemb_day = sinusoidal_day_embedding(num_days=365, d_model=64)
+            ix_day = ds_map['day_of_year']
+            # clip to 0-364
+            ds[:, ix_day, :] = np.clip(ds[:, ix_day, :] - 1, 0, 364)
+            ds[:, ix_day, :] = sinemb_day[ds[:, ix_day, 0].astype(int), :] # just take the first bin for the time feature
+    
+        if with_mask:
+            # adding additional channel with nan mask for first column
+            mask = np.zeros((n_samples, 1, n_dims), dtype=np.bool)
+            mask[:, 0, :] = np.isnan(ds[:, 0, :])
+            ds = np.concatenate([ds, ~mask], axis=1)
+        dss.append(ds)
+    return dss
+
+def prep_df(dfs, logger=None, bound=False, index=None):
+    """prepare dataframe for training
+        - the idea is to use it for "segment independent" feature extraction (which is easier to do in a dataframe)
+        - this is a bit of a hack, but it works for now
+        - should be usable for learning pointwise estimates and the segmented estimates
+    """
+    logger = make_logger(logger)
+    if not isinstance(dfs, list):
+        dfs = [dfs]
+    
+    for df in dfs:
+        df.reset_index(inplace=True)
+    
+        logger.info("salinity stacking")
+        df['sss_cci'] = df['sss_cci'].fillna(df['salt_soda'])
+    
+        logger.info("adding positional and temporal encodings")
+        df['sin_day_of_year'] = np.sin(df['day_of_year']* np.pi / 365)
+        df['cos_day_of_year'] = np.cos(df['day_of_year']* np.pi / 365)
+        # normalize lons to range [-180, 180] from [0, 360]
+        df['lon'] = (df['lon'] + 180) % 360 - 180
+        df['sin_lat'] = np.sin(df['lat'] * np.pi / 180)
+        # embed lat and lon features
+        df['sin_lon_cos_lat'] = np.sin(df['lon'] * np.pi / 180) * np.cos(df['lat'] * np.pi / 180)
+        df['cos_lon_cos_lat'] = np.cos(df['lon'] * np.pi / 180) * np.cos(df['lat'] * np.pi / 180)
+        
+        logger.info("removing atmospheric co2 levels from fco2rec_uatm")
+        df['fco2rec_uatm'] = df['fco2rec_uatm'] - df['xco2']
+    
+        if bound:
+            logger.info("clipping fco2rec_uatm to 5th and 95th percentiles")
+            fco2rec_uatm_95th = df['fco2rec_uatm'].quantile(0.95)
+            fco2rec_uatm_5th = df['fco2rec_uatm'].quantile(0.05)
+            df['fco2rec_uatm'] = df['fco2rec_uatm'].clip(lower=fco2rec_uatm_5th, upper=fco2rec_uatm_95th)
+        if index is not None:
+            # set index to the given index
+            df.set_index(index, inplace=True)
+    
+    return dfs
+
+def get_augmentations(ds, aug_names):
+    """get augmentations for the dataset of shape (n_samples, n_features, n_bins)"""
+    if 'mirror' in aug_names:
+        # mirror the dataset along the first axis
+        ds = np.concatenate([ds, ds[:, :, ::-1]], axis=0)
+
+def normalize_dss(dss, mode, logger=None, ignore=None):
+    
+    logger = make_logger(logger)
+
+
+    train_ds = dss[0]
+    rest_ds = dss[1:]
+    
+    train_means = []
+    train_stds = []
+    train_mins = []
+    train_maxs = []
+    for i in range(train_ds.shape[1]):
+        train_means.append(np.nanmean(train_ds[:, i, :]))
+        train_stds.append(np.nanstd(train_ds[:, i, :]))
+        train_mins.append(np.nanmin(train_ds[:, i, :]))
+        train_maxs.append(np.nanmax(train_ds[:, i, :]))
+    
+    logger.info(f"Normalizing data using {mode} normalization")
+    
+    def normalize(x, i,  mode):
+        """normalize the data"""
+        if mode == 'mean_std':
+            x = (x - train_means[i]) / train_stds[i]
+        elif mode == 'min_max':
+            # normalize -1 to 1
+            x = 2 * (x - train_mins[i]) / (train_maxs[i] - train_mins[i]) - 1
+        else:
+            raise ValueError(f"Unknown normalization mode: {mode}")
+        return x
+    
+    
+    for i in range(train_ds.shape[1]):
+        if i in ignore:
+            continue
+        train_ds[:, i, :] = normalize(train_ds[:, i, :], i, mode)
+        for ds in rest_ds:
+            ds[:, i, :] = normalize(ds[:, i, :], i, mode)
+
+    return train_ds, rest_ds, train_means, train_stds, train_mins, train_maxs
+    
+    
+    
+def load_checkpoint(path, model, optimizer, scheduler=None, logger=None):
+    """Load a checkpoint from a given path."""
+
+    logger = make_logger(logger)
+    logger.info(f"Loading checkpoint from {path}")
+    # Load checkpoint
+    checkpoint = torch.load(path)
+
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+    if scheduler and checkpoint['scheduler_state_dict']:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+    epoch = checkpoint['epoch'] + 1  # Continue from next epoch
+    train_losses = checkpoint['train_losses']
+    val_losses = checkpoint['val_losses']
+    logger.info(f'starting from epoch {epoch + 1}')
+    return model, optimizer, scheduler, epoch, train_losses, val_losses
+
+def make_logger(logger):
+    """define a logger if there is none"""
+    if logger is None:
         # log to stdout
-        logging = log
+        logger = log
         log.basicConfig(
             level=log.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[log.StreamHandler()]
         )
-    
-    ds_raw = df_to_ds(df)
-    col_map = dict(zip(df.columns, range(len(df.columns))))
-    
-    # fill missing sss_cci values with salt_soda values
-    logging.info("Filling missing sss_cci values with salt_soda values")
-    salt_soda = ds_raw[col_map['salt_soda']]
-    sss_cci = ds_raw[col_map['sss_cci']]
-    mask = np.isnan(sss_cci)
-    ds_raw[col_map['sss_cci'], mask] = salt_soda[np.isnan(sss_cci)]
-    
-    y = ds_raw[0]
-    # logging.info("Checking for nans in y")
-    # assert np.apply_along_axis(lambda x: np.isnan(x).all(), 1, y).sum() == 0
-    logging.info("predictors: %s", predictors)
-    ds_map = dict(zip(predictors, range(1, len(predictors) + 1)))
-    X, y = filter_nans(ds_raw[:, :, :], y[:, :], predictors, col_map)
-    print(X.shape, y.shape)
+    return logger
 
-    # assert np.apply_along_axis(lambda x: np.isnan(x).all(), 1, y).sum() == 0
-    
-    print(X.shape, y[np.newaxis].shape)
-    assert np.isnan(X).sum() == 0
-    n_samples = X.shape[1]
-    n_dims = X.shape[2]
-    ds = np.zeros((n_samples, X.shape[0] + 1, n_dims))
-    
-    ds[:, 0, :] = y
-    for i in range(X.shape[0]):
-        ds[:, i + 1, :] = X[i]
-    
-    # clip 0th channel to 0-500
-    print("number of fco2 measurements greater than 500: ", np.sum(ds[:, 0, :] > 500))
-    logging.info("clipping fco2 values to 0-500")
-    ds[:, 0, :] = np.clip(ds[:, 0, :], 0, 500)
-    
 
-    if 'lat' in predictors:
-        lat_col = ds_map['lat']
-        logging.info("add latitude feature")
-        # round latitude column to 1 degree and shift to range 0-180
-        ds[:, lat_col, :] = (np.rint(ds[:, lat_col, :]) + 90).astype(int)
-        sinemb_lat = sinusoidal_day_embedding(num_days=181, d_model=64)
-        ds[:, lat_col, :] = sinemb_lat[ds[:, lat_col, 0].astype(int), :] # take first bin for latitude feature
-
-    if 'lon' in predictors:
-        lat_col = ds_map['lon']
-        logging.info("add longitude feature")
-        # round latitude column to 1 degree and shift to range 0-180
-        ds[:, lat_col, :] = (np.rint(ds[:, lat_col, :])).astype(int)
-        sinemb_lon = sinusoidal_day_embedding(num_days=361, d_model=64)
-        ds[:, lat_col, :] = sinemb_lon[ds[:, lat_col, 0].astype(int), :] # take first bin for latitude feature
+import json
+def save_losses_and_png(train_losses, val_losses, save_dir):
+    with open(save_dir+'losses.json', 'w') as f:
+        losses_dict = {
+            'train_losses': train_losses,
+            'val_losses': val_losses
+        }
+        json.dump(losses_dict, f)
     
-    if 'day_of_year' in ds_map:
-        ix_day = ds_map['day_of_year']
-        logging.info("add day of year feature")
-        # embed time feature
-        sinemb_day = sinusoidal_day_embedding(num_days=365, d_model=64)
-        ix_day = ds_map['day_of_year']
-        # clip to 0-364
-        ds[:, ix_day, :] = np.clip(ds[:, ix_day, :] - 1, 0, 364)
-        ds[:, ix_day, :] = sinemb_day[ds[:, ix_day, 0].astype(int), :] # just take the first bin for the time feature
+    val_losses = np.array(val_losses).T
+    # plot and save the training and validation losses
+    import matplotlib.pyplot as plt
+    plt.plot(train_losses, label='train')
+    plt.plot(val_losses, label='val')
+    
+    # loglog the losses
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.legend()
+    plt.xlabel('epoch')
+    plt.ylabel('loss')
+    plt.title('Training and Validation Losses')
+    plt.savefig(save_dir + 'losses.png')
+    plt.show()
 
-    return ds
-
+def save_losses_and_png_diffusion(train_losses, val_losses, save_dir, t_tot):
+    with open(save_dir+'losses.json', 'w') as f:
+        losses_dict = {
+            'train_losses': train_losses,
+            'val_losses': val_losses
+        }
+        json.dump(losses_dict, f)
+    
+    val_losses = np.array(val_losses).T
+    # plot and save the training and validation losses
+    import matplotlib.pyplot as plt
+    plt.plot(train_losses, label='train')
+    for (i, t) in enumerate(range(0, t_tot, t_tot//10)):
+        plt.plot(val_losses[i], label=f'val {t}')
+    
+    # loglog the losses
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.legend()
+    plt.xlabel('epoch')
+    plt.ylabel('loss')
+    plt.title('Training and Validation Losses')
+    plt.savefig(save_dir + 'losses.png')
+    plt.show()
