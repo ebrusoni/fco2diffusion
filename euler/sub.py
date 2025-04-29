@@ -14,7 +14,7 @@ import numpy as np
 # import wandb
 from diffusers.optimization import get_cosine_schedule_with_warmup
 from diffusers import DDPMScheduler, UNet1DModel
-from fco2models.utraining import train_diffusion, load_checkpoint, prepare_segment_ds, normalize_dss, prep_df, save_losses_and_png_diffusion
+from fco2models.utraining import train_diffusion, load_checkpoint, prepare_segment_ds, normalize_dss, prep_df, save_losses_and_png_diffusion, get_stats
 from torch.utils.data import TensorDataset
 import json
 from fco2models.models import MLP, UNet2DModelWrapper
@@ -38,9 +38,11 @@ df_train = pd.read_parquet(DATA_PATH+'traindf_100km_random_reshaped.pq')
 df_val = pd.read_parquet(DATA_PATH+'valdf_100km_random_reshaped.pq')
 df_2021 = pd.read_parquet(DATA_PATH+'df_100km_random_reshaped_2021.pq')
 
-df_train, df_val, df_2021 = prep_df([df_train, df_val, df_2021], index = ['segment', 'bin'], logger=logging)
+df_train, df_val, df_2021 = prep_df([df_train, df_val, df_2021], index = ['segment', 'bin'], logger=logging, bound=True)
 
-predictors = ['sst_cci', 'sss_cci', 'chl_globcolour']
+predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'ssh_sla', 'mld_dens_soda', 'xco2']
+positional_encoding = ['sin_day_of_year', 'cos_day_of_year', 'sin_lat', 'sin_lon_cos_lat', 'cos_lon_cos_lat']
+predictors += positional_encoding
 train_ds, val_ds, val_ds_2021  = prepare_segment_ds([df_train, df_val, df_2021], predictors, logging=logging)
 val_ds = np.concatenate([val_ds, val_ds_2021], axis = 0)
 
@@ -52,17 +54,13 @@ logging.info(f"val_ds shape: {val_ds.shape}")
 
 # normalize the data
 mode = 'min_max'
-train_ds, rest_ds, train_means, train_stds, train_mins, train_maxs = normalize_dss([train_ds, val_ds], mode, logger=logging)
-vald_ds = rest_ds[0]
+train_stats = get_stats(train_ds, logger=logging)
+train_ds, val_ds = normalize_dss([train_ds, val_ds], train_stats, mode, ignore=[7,8,9,10,11],  logger=logging)
 
 # print mins and maxs of the data
 for i in range(train_ds.shape[1]):
     print(f"train_ds {i} min: {np.nanmin(train_ds[:, i, :])}, max: {np.nanmax(train_ds[:, i, :])}")
     print(f"val_ds {i} min: {np.nanmin(val_ds[:, i, :])}, max: {np.nanmax(val_ds[:, i, :])}")
-
-# save the training and validation data
-np.save('../train_ds.npy', train_ds)
-np.save('../val_ds.npy', val_ds)
 
 print(f"train_ds shape: {train_ds.shape}")
 print(f"val_ds shape: {val_ds.shape}")
@@ -90,17 +88,20 @@ layers_per_block = 2
 down_block_types = ('DownBlock2D', 'AttnDownBlock2D')
 up_block_types = ('AttnUpBlock2D', 'UpBlock2D')
 model_params = {
-    "sample_size": (4, 64),
+    "sample_size": (13, 64),
     "in_channels": 1,
     "out_channels": 1,
     "layers_per_block": layers_per_block,
-    "block_out_channels": (32, 64),
+    "block_out_channels": (16, 32),
     "down_block_types": down_block_types,
     "up_block_types": up_block_types,
-    "norm_num_groups": 16
+    "norm_num_groups": 8
 }
 
 model = UNet2DModelWrapper(**model_params)
+def count_trainable_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"Number of trainable parameters: {count_trainable_parameters(model)}")
 
 # model_params = {
 #     "input_dim": 64*(ds.shape[1] + 1),
@@ -148,10 +149,10 @@ param_dict = {
     "lr": lr,
     "optimizer": optimizer.__class__.__name__,
     "predictors": predictors,
-    "train_means": train_means,
-    "train_stds": train_stds,
-    "train_mins": train_mins,
-    "train_maxs": train_maxs,
+    "train_means": train_stats['means'],
+    "train_stds": train_stats['stds'],
+    "train_mins": train_stats['mins'],
+    "train_maxs": train_stats['maxs'],
     "mode": mode,
     }
 

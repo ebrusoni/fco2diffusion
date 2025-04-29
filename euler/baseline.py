@@ -15,7 +15,7 @@ from torch.utils.data import TensorDataset
 from diffusers.optimization import get_cosine_schedule_with_warmup, get_constant_schedule
 from diffusers import DDPMScheduler, UNet1DModel
 
-from fco2models.utraining import prep_df, normalize_dss, prepare_segment_ds, save_losses_and_png, load_checkpoint
+from fco2models.utraining import prep_df, normalize_dss, prepare_segment_ds, save_losses_and_png, load_checkpoint, get_stats
 from fco2models.models import MLP, UNet2DModelWrapper, ConvNet, UNet2DModelWrapper
 from fco2models.umeanest import train_mean_estimator
 
@@ -24,9 +24,9 @@ np.random.seed(0)
 torch.manual_seed(0)
 torch.cuda.manual_seed(0)
 
-lr = 1e-2
+lr = 4e-5
 batch_size = 128
-num_epochs = 100
+num_epochs = 40
 
 
 logging.info("------------ Starting training ------------------")
@@ -39,7 +39,7 @@ df_2021 = pd.read_parquet(DATA_PATH+'df_100km_xco2_2021.pq')
 df_train, df_val, df_2021 = prep_df([df_train, df_val, df_2021], index = ['segment', 'bin'], logger=logging)
 
 predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'ssh_sla', 'mld_dens_soda', 'xco2']
-positional_encoding = ['sin_day_of_year', 'cos_day_of_year', 'sin_lat', 'sin_lon_cos_lat', 'cos_lon_cos_lat']
+positional_encoding = ['day_of_year', 'lat', 'lon']
 predictors += positional_encoding
 train_ds, val_ds = prepare_segment_ds([df_train, df_val], predictors, with_mask=True, logging=logging)
 mask_ix = len(predictors) + 1
@@ -52,9 +52,9 @@ logging.info(f"train_ds shape: {train_ds.shape}")
 logging.info(f"val_ds shape: {val_ds.shape}")
 
 
-mode = 'mean_std'
-train_ds, rest_ds, train_means, train_stds, train_mins, train_maxs = normalize_dss([train_ds, val_ds], mode, ignore=list(range(7, 13)), logger=logging)
-vald_ds = rest_ds[0]
+mode = 'min_max'
+train_stats = get_stats(train_ds, logger=logging)
+train_ds, val_ds = normalize_dss([train_ds, val_ds], train_stats, mode, ignore=[7, 8, 9] + [mask_ix], logger=logging)
 
 # print mins and maxs of the data
 for i in range(train_ds.shape[1]):
@@ -81,10 +81,26 @@ val_dataloader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=Fal
 # }
 
 # model = UNet2DModelWrapper(**model_params)
-model_params = { 
-    "channels_in": train_ds.shape[1] - 1
-    }
-model = ConvNet(**model_params)
+
+layers_per_block = 2
+down_block_types = ('DownBlock1D', 'DownBlock1D')
+up_block_types = ('UpBlock1D', 'UpBlock1D')
+model_params = {
+    "sample_size": 64,
+    "in_channels": (len(predictors) + 1),
+    "out_channels": 1,
+    "layers_per_block": layers_per_block,
+    "block_out_channels": (32, 64),
+    "down_block_types": down_block_types,
+    "up_block_types": up_block_types,
+    "norm_num_groups": 32
+}
+model = UNet1DModel(**model_params)
+
+# model_params = { 
+#     "channels_in": train_ds.shape[1] - 1
+#     }
+# model = ConvNet(**model_params)
 
 def count_trainable_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -108,10 +124,10 @@ param_dict = {
     "num_epochs": num_epochs,
     "lr": lr,
     "predictors": predictors,
-    "train_means": train_means,
-    "train_stds": train_stds,
-    "train_mins": train_mins,
-    "train_maxs": train_maxs,
+    "train_means": train_stats['means'],
+    "train_stds": train_stats['stds'],
+    "train_mins": train_stats['mins'],
+    "train_maxs": train_stats['maxs'],
     "mode": mode,
     }
 
@@ -130,6 +146,7 @@ else:
     train_losses_old = []
     val_losses_old = []    
 
+rmse_const = train_stats['stds'] if mode == 'mean_std' else (train_stats['maxs'] - train_stats['mins']) / 2.0
 model, train_losses, val_losses = train_mean_estimator(model,
                                                        num_epochs=num_epochs, 
                                                        old_epoch=epoch,
@@ -138,7 +155,7 @@ model, train_losses, val_losses = train_mean_estimator(model,
                                                        train_dataloader=train_dataloader,
                                                        val_dataloader=val_dataloader,
                                                        save_model_path=save_dir, 
-                                                       rmse_const=train_stds[0])
+                                                       rmse_const=rmse_const)
 
     
 save_losses_and_png(

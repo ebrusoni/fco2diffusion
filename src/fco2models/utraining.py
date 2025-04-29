@@ -90,21 +90,20 @@ def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_s
             # Calculate the loss
             optimizer.zero_grad()
             loss = loss_fn(noise_pred[~nan_mask], noise[~nan_mask])	
-            loss.backward(loss)
+            loss.backward()
             epoch_loss += loss.item()
             
             # Update the model parameters with the optimizer
             optimizer.step()
-
-            # Update the learning rate
-            lr_scheduler.step()
-
+            
             #update loss in progress bar
             progress_bar.set_postfix({"Loss": loss.item()})
             # batch.detach()
         train_losses.append(epoch_loss / len(train_dataloader))
         print(f"Epoch {epoch+1} Loss: {epoch_loss / len(train_dataloader):.6f}")
         check_gradients(model)
+        # Update the learning rate
+        lr_scheduler.step()
 
         # print validation loss
         model.eval()
@@ -282,7 +281,7 @@ def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False):
         dss.append(ds)
     return dss
 
-def prep_df(dfs, logger=None, bound=False, index=None):
+def prep_df(dfs, logger=None, bound=False, index=None, normalize=False):
     """prepare dataframe for training
         - the idea is to use it for "segment independent" feature extraction (which is easier to do in a dataframe)
         - this is a bit of a hack, but it works for now
@@ -292,6 +291,7 @@ def prep_df(dfs, logger=None, bound=False, index=None):
     if not isinstance(dfs, list):
         dfs = [dfs]
     
+    res = []
     for df in dfs:
         df.reset_index(inplace=True)
     
@@ -306,10 +306,16 @@ def prep_df(dfs, logger=None, bound=False, index=None):
         df['sin_lat'] = np.sin(df['lat'] * np.pi / 180)
         # embed lat and lon features
         df['sin_lon_cos_lat'] = np.sin(df['lon'] * np.pi / 180) * np.cos(df['lat'] * np.pi / 180)
-        df['cos_lon_cos_lat'] = np.cos(df['lon'] * np.pi / 180) * np.cos(df['lat'] * np.pi / 180)
+        df['cos_lon_cos_lat'] = - np.cos(df['lon'] * np.pi / 180) * np.cos(df['lat'] * np.pi / 180)
+
+        df['sin_lon'] = np.sin(df['lon'] * np.pi / 180)
+        df['cos_lon'] = np.cos(df['lon'] * np.pi / 180)
+        df['is_north'] = df['lat'] > 0
         
         logger.info("removing atmospheric co2 levels from fco2rec_uatm")
         df['fco2rec_uatm'] = df['fco2rec_uatm'] - df['xco2']
+        logger.info("clip values of fco2 between 0 and 400")
+        df['fco2rec_uatm'] = df['fco2rec_uatm'].clip(lower=None, upper=400)
     
         if bound:
             logger.info("clipping fco2rec_uatm to 5th and 95th percentiles")
@@ -319,8 +325,9 @@ def prep_df(dfs, logger=None, bound=False, index=None):
         if index is not None:
             # set index to the given index
             df.set_index(index, inplace=True)
+        res.append(df)
     
-    return dfs
+    return res
 
 def get_augmentations(ds, aug_names):
     """get augmentations for the dataset of shape (n_samples, n_features, n_bins)"""
@@ -328,23 +335,17 @@ def get_augmentations(ds, aug_names):
         # mirror the dataset along the first axis
         ds = np.concatenate([ds, ds[:, :, ::-1]], axis=0)
 
-def normalize_dss(dss, mode, logger=None, ignore=None):
-    
+def normalize_dss(dss, stats, mode, logger=None, ignore=None):
     logger = make_logger(logger)
-
-
-    train_ds = dss[0]
-    rest_ds = dss[1:]
+    if ignore is None:
+        ignore = []
     
-    train_means = []
-    train_stds = []
-    train_mins = []
-    train_maxs = []
-    for i in range(train_ds.shape[1]):
-        train_means.append(np.nanmean(train_ds[:, i, :]))
-        train_stds.append(np.nanstd(train_ds[:, i, :]))
-        train_mins.append(np.nanmin(train_ds[:, i, :]))
-        train_maxs.append(np.nanmax(train_ds[:, i, :]))
+    # use the given stats for normalization
+    train_means = stats['means']
+    train_stds = stats['stds']
+    train_mins = stats['mins']
+    train_maxs = stats['maxs']
+    logger.info("Using given stats for normalization")
     
     logger.info(f"Normalizing data using {mode} normalization")
     
@@ -359,15 +360,38 @@ def normalize_dss(dss, mode, logger=None, ignore=None):
             raise ValueError(f"Unknown normalization mode: {mode}")
         return x
     
-    
-    for i in range(train_ds.shape[1]):
-        if i in ignore:
-            continue
-        train_ds[:, i, :] = normalize(train_ds[:, i, :], i, mode)
-        for ds in rest_ds:
+    for ds in dss:
+        for i in range(ds.shape[1]):
+            if i in ignore:
+                continue
             ds[:, i, :] = normalize(ds[:, i, :], i, mode)
 
-    return train_ds, rest_ds, train_means, train_stds, train_mins, train_maxs
+    return dss
+
+def get_stats(ds, logger=None):
+    """get stats for the dataset of shape (n_samples, n_features, n_bins)"""
+    logger = make_logger(logger)
+    means = []
+    stds = []
+    mins = []
+    maxs = []
+    for i in range(ds.shape[1]):
+        means.append(np.nanmean(ds[:, i, :]))
+        stds.append(np.nanstd(ds[:, i, :]))
+        mins.append(np.nanmin(ds[:, i, :]))
+        maxs.append(np.nanmax(ds[:, i, :]))
+    
+    logger.info(f"Means: {means}")
+    logger.info(f"Stds: {stds}")
+    logger.info(f"Mins: {mins}")
+    logger.info(f"Maxs: {maxs}")
+    
+    return {
+        'means': means,
+        'stds': stds,
+        'mins': mins,
+        'maxs': maxs
+    }
     
     
     
