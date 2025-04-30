@@ -146,7 +146,7 @@ else:
     train_losses_old = []
     val_losses_old = []    
 
-rmse_const = train_stats['stds'] if mode == 'mean_std' else (train_stats['maxs'] - train_stats['mins']) / 2.0
+rmse_const = train_stats['stds'][0] if mode == 'mean_std' else (train_stats['maxs'][0] - train_stats['mins'][0]) / 2.0
 model, train_losses, val_losses = train_mean_estimator(model,
                                                        num_epochs=num_epochs, 
                                                        old_epoch=epoch,
