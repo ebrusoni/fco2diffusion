@@ -102,9 +102,10 @@ def rec_sample(sample_context, model, noise_scheduler, timesteps):
 
     return reconstructed_fco2s, noisy_samples
 
-def to_original_scale(ds, stats, mode):
+def rescale(ds, stats, mode):
     """
     Rescale the dataset using the given stats.
+    ds shape: (n_samples, features, n_bins)
     """
     train_means = stats['train_means']
     train_stds = stats['train_stds']
@@ -122,21 +123,12 @@ def to_original_scale(ds, stats, mode):
 
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, root_mean_squared_error
 from scipy.stats import pearsonr
-def get_error_stats(samples, truth, stats, mode):
+def get_error_stats(samples, truth):
     """
     Calculate the error statistics between the samples and the truth values.
     samples: (n_samples, n_rec, n_bins)
     truth: (n_samples, 1, n_bins)
-    stats: (n_features,)
     """
-    if truth.ndim == 2:
-        truth = truth[:, np.newaxis, :]
-
-
-    samples = to_original_scale(
-        samples.reshape(-1, 1, samples.shape[2]).copy(), stats, mode
-        ).reshape(samples.shape)
-    truth = to_original_scale(truth.copy(), stats, mode)
 
     means = np.nanmean(samples, axis=1)[:, np.newaxis, :]
     
@@ -144,6 +136,8 @@ def get_error_stats(samples, truth, stats, mode):
     rmse = root_mean_squared_error(truth[~nan_mask], means[~nan_mask])
     mae = mean_absolute_error(truth[~nan_mask], means[~nan_mask])
     r2 = r2_score(truth[~nan_mask], means[~nan_mask])
+    #bias
+    bias = np.nanmean(truth - means, axis=2)
 
     corrs = np.zeros(truth.shape[0])
     for i in range(truth.shape[0]):
@@ -158,7 +152,16 @@ def get_error_stats(samples, truth, stats, mode):
     print(f"RMSE: {rmse:.4f}")
     print(f"MAE: {mae:.4f}")
     print(f"R2: {r2:.4f}")
+    print(f"Bias: {bias.mean():.4f} ± {bias.std():.4f}")
     print(f"Mean correlation: {mean_corr:.4f} ± {mean_corr_std:.4f}")
 
-    return samples, truth
+    return dict({
+        'rmse': rmse,
+        'mae': mae,
+        'r2': r2,
+        'bias': bias.mean(),
+        'bias_std': bias.std(),
+        'mean_corr': mean_corr,
+        'mean_corr_std': mean_corr_std
+    })
 
