@@ -21,34 +21,8 @@ def check_gradients(model):
 
 import numpy as np
 
-
-def sinusoidal_day_embedding(num_days=365, d_model=64):
-    """
-    Create sinusoidal embeddings for days of the year.
-    
-    Args:
-        num_days (int): Number of time steps (typically 365 for days in a year)
-        d_model (int): Dimension of the embedding vector (must be even)
-        
-    Returns:
-        np.ndarray of shape (num_days, d_model)
-    """
-    assert d_model % 2 == 0, "Embedding dimension (d_model) must be even."
-    
-    days = np.arange(num_days).reshape(-1, 1)  # Shape: (365, 1)
-    div_term = np.exp(np.arange(0, d_model, 2) * (-np.log(10000.0) / d_model))  # Shape: (d_model/2,)
-    
-    pe = np.zeros((num_days, d_model))
-    pe[:, 0::2] = np.sin(days * div_term)
-    pe[:, 1::2] = np.cos(days * div_term)
-    
-    return pe
-
-    
-
-
 # Training function
-def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_scheduler, optimizer, lr_scheduler, save_model_path=None):
+def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_scheduler, optimizer, lr_scheduler, save_model_path=None, pos_encodings_start=None):
     """training loop for diffusion model"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}")
@@ -70,7 +44,9 @@ def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_s
         for batch in progress_bar:
             batch = batch[0].to(device)
             target = batch[:, 0:1, :]
-            context = batch[:, 1:, :]
+            context = batch[:, 1:pos_encodings_start, :]
+            pos_encodings = batch[:, pos_encodings_start:, :]
+            
             noise = torch.randn_like(target).to(device).float()
             # Sample a random timestep for each image
             timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (batch.shape[0],), device=device).long()
@@ -85,7 +61,8 @@ def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_s
             noisy_input = noisy_input.to(device).float()
             
             # Get the model prediction
-            noise_pred = model(noisy_input, timesteps, return_dict=False)[0]
+            class_labels = None if pos_encodings_start is None else pos_encodings.long()
+            noise_pred = model(noisy_input, timesteps, return_dict=False, class_labels=class_labels)[0]
 
             # Calculate the loss
             optimizer.zero_grad()
@@ -207,6 +184,28 @@ def full_denoise(model, noise_scheduler, context_loader, jump=None):
     return np.array(samples)
 
 
+def sinusoidal_embedding(num_days=365, d_model=64):
+    """
+    Create sinusoidal embeddings for days of the year.
+    
+    Args:
+        num_days (int): Number of time steps (typically 365 for days in a year)
+        d_model (int): Dimension of the embedding vector (must be even)
+        
+    Returns:
+        np.ndarray of shape (num_days, d_model)
+    """
+    assert d_model % 2 == 0, "Embedding dimension (d_model) must be even."
+    
+    days = np.arange(num_days).reshape(-1, 1)  # Shape: (365, 1)
+    div_term = np.exp(np.arange(0, d_model, 2) * (-np.log(10000.0) / d_model))  # Shape: (d_model/2,)
+    
+    pe = np.zeros((num_days, d_model))
+    pe[:, 0::2] = np.sin(days * div_term)
+    pe[:, 1::2] = np.cos(days * div_term)
+    
+    return pe
+
 def df_to_ds(df,):
     num_bins = df.index.get_level_values('bin').nunique()
     num_segments = df.index.get_level_values('segment').nunique()
@@ -252,7 +251,7 @@ def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False):
             logging.info("add latitude feature")
             # round latitude column to 1 degree and shift to range 0-180
             ds[:, lat_col, :] = (np.rint(ds[:, lat_col, :]) + 90).astype(int)
-            sinemb_lat = sinusoidal_day_embedding(num_days=181, d_model=64)
+            sinemb_lat = sinusoidal_embedding(num_days=181, d_model=64)
             ds[:, lat_col, :] = sinemb_lat[ds[:, lat_col, 0].astype(int), :] # take first bin for latitude feature
     
         if 'lon' in predictors:
@@ -260,14 +259,14 @@ def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False):
             logging.info("add longitude feature")
             # round latitude column to 1 degree and shift to range 0-180
             ds[:, lat_col, :] = (np.rint(ds[:, lat_col, :])).astype(int)
-            sinemb_lon = sinusoidal_day_embedding(num_days=361, d_model=64)
+            sinemb_lon = sinusoidal_embedding(num_days=361, d_model=64)
             ds[:, lat_col, :] = sinemb_lon[ds[:, lat_col, 0].astype(int), :] # take first bin for latitude feature
         
         if 'day_of_year' in ds_map:
             ix_day = ds_map['day_of_year']
             logging.info("add day of year feature")
             # embed time feature
-            sinemb_day = sinusoidal_day_embedding(num_days=365, d_model=64)
+            sinemb_day = sinusoidal_embedding(num_days=365, d_model=64)
             ix_day = ds_map['day_of_year']
             # clip to 0-364
             ds[:, ix_day, :] = np.clip(ds[:, ix_day, :] - 1, 0, 364)
@@ -275,7 +274,7 @@ def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False):
     
         if with_mask:
             # adding additional channel with nan mask for first column
-            mask = np.zeros((n_samples, 1, n_dims), dtype=np.bool)
+            mask = np.zeros((n_samples, 1, n_dims), dtype=bool)
             mask[:, 0, :] = np.isnan(ds[:, 0, :])
             ds = np.concatenate([ds, ~mask], axis=1)
         dss.append(ds)

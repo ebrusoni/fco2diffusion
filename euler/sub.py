@@ -34,16 +34,16 @@ logging.info("------------ Starting training ------------------")
 # df = pd.read_parquet('../data/training_data/traindf_100km.pq')
 logging.info("Training with larger random dataset")
 logging.info("Using already separated train and validation datasets")
-df_train = pd.read_parquet(DATA_PATH+'traindf_100km_random_reshaped.pq')
-df_val = pd.read_parquet(DATA_PATH+'valdf_100km_random_reshaped.pq')
-df_2021 = pd.read_parquet(DATA_PATH+'df_100km_random_reshaped_2021.pq')
+df_train = pd.read_parquet(DATA_PATH+'traindf_100km_xco2.pq')
+df_val = pd.read_parquet(DATA_PATH+'valdf_100km_xco2.pq')
+df_2021 = pd.read_parquet(DATA_PATH+'df_100km_xco2_2021.pq')
 
 df_train, df_val, df_2021 = prep_df([df_train, df_val, df_2021], index = ['segment', 'bin'], logger=logging, bound=True)
 
 predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'ssh_sla', 'mld_dens_soda', 'xco2']
 positional_encoding = ['sin_day_of_year', 'cos_day_of_year', 'sin_lat', 'sin_lon_cos_lat', 'cos_lon_cos_lat']
-predictors += positional_encoding
-train_ds, val_ds, val_ds_2021  = prepare_segment_ds([df_train, df_val, df_2021], predictors, logging=logging)
+all_cols = predictors + positional_encoding
+train_ds, val_ds, val_ds_2021  = prepare_segment_ds([df_train, df_val, df_2021], all_cols, logging=logging)
 val_ds = np.concatenate([val_ds, val_ds_2021], axis = 0)
 
 print(f"train_ds shape: {train_ds.shape}")
@@ -95,7 +95,8 @@ model_params = {
     "block_out_channels": (16, 32),
     "down_block_types": down_block_types,
     "up_block_types": up_block_types,
-    "norm_num_groups": 8
+    "norm_num_groups": 8,
+    #"num_class_embeds": len(positional_encoding)
 }
 
 model = UNet2DModelWrapper(**model_params)
@@ -148,7 +149,7 @@ param_dict = {
     "num_epochs": num_epochs,
     "lr": lr,
     "optimizer": optimizer.__class__.__name__,
-    "predictors": predictors,
+    "predictors": all_cols,
     "train_means": train_stats['means'],
     "train_stds": train_stats['stds'],
     "train_mins": train_stats['mins'],
@@ -170,7 +171,8 @@ model, train_losses, val_losses = train_diffusion(model,
                                                   noise_scheduler=noise_scheduler, 
                                                   train_dataloader=train_dataloader,
                                                   val_dataloader=val_dataloader,
-                                                  save_model_path=save_dir
+                                                  save_model_path=save_dir,
+                                                  pos_encodings_start=None,
                                                   )
 
     
