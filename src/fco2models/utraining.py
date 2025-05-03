@@ -313,14 +313,15 @@ def prep_df(dfs, logger=None, bound=False, index=None, normalize=False):
         
         logger.info("removing atmospheric co2 levels from fco2rec_uatm")
         df['fco2rec_uatm'] = df['fco2rec_uatm'] - df['xco2']
-        logger.info("clip values of fco2 between 0 and 400")
-        df['fco2rec_uatm'] = df['fco2rec_uatm'].clip(lower=None, upper=400)
+        #logger.info("clip values of fco2 between 0 and 400")
+        #df['fco2rec_uatm'] = df['fco2rec_uatm'].clip(lower=None, upper=400)
     
         if bound:
-            logger.info("clipping fco2rec_uatm to 5th and 95th percentiles")
-            fco2rec_uatm_95th = df['fco2rec_uatm'].quantile(0.95)
-            fco2rec_uatm_5th = df['fco2rec_uatm'].quantile(0.05)
-            df['fco2rec_uatm'] = df['fco2rec_uatm'].clip(lower=fco2rec_uatm_5th, upper=fco2rec_uatm_95th)
+            logger.info("replacing outliers with Nans, fco2rec_uatm > 400")
+            # fco2rec_uatm_95th = df['fco2rec_uatm'].quantile(0.95)
+            # fco2rec_uatm_5th = df['fco2rec_uatm'].quantile(0.05)
+            # df['fco2rec_uatm'] = df['fco2rec_uatm'].clip(lower=fco2rec_uatm_5th, upper=fco2rec_uatm_95th)
+            df.loc[df.fco2rec_uatm > 400, 'fco2rec_uatm'] = np.nan
         if index is not None:
             # set index to the given index
             df.set_index(index, inplace=True)
