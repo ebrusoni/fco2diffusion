@@ -3,6 +3,104 @@ import torch.nn as nn
 from tqdm import tqdm
 import numpy as np
 
+def compute_gradient_norm(model):
+    total_norm = 0
+    for p in model.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.detach().data.norm(2)
+            total_norm += param_norm.item() ** 2
+    return total_norm ** 0.5
+
+def train_pointwise_mlp(model, num_epochs, old_epoch, train_dataloader, val_dataloader, optimizer, lr_scheduler, save_model_path=None, rmse_const=None):
+    """training loop for pointwise mlp model"""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on {device}")
+    model.to(device)
+    
+    loss_fn = nn.MSELoss()
+    train_losses = []
+    val_losses = []
+    for epoch in range(old_epoch, num_epochs):
+        model.train()
+        epoch_loss = 0.0
+        progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")
+        
+        grad_norms = []
+        for batch in progress_bar:
+            optimizer.zero_grad()
+
+            batch = batch[0].to(device)
+            target = batch[:, 0:1].float()
+            context = batch[:, 1:]
+
+            #concatenate the noisy target with the context and the mask
+            model_input = context
+            model_input = model_input.to(device).float()
+            
+            # Get the model prediction
+            mean_pred = model(model_input.to(device).float(), 
+                              torch.zeros(batch.shape[0], ).to(device).float(), 
+                              return_dict=False)[0]
+
+            # Calculate the loss
+            
+            loss = loss_fn(mean_pred, target)	
+            loss.backward()
+            grad_norms.append(compute_gradient_norm(model))
+            epoch_loss += loss.item()
+            
+            # Update the model parameters with the optimizer
+            optimizer.step()
+
+            #update loss in progress bar
+            progress_bar.set_postfix({"Loss": loss.item()})
+            # batch.detach()
+        train_losses.append(epoch_loss / len(train_dataloader))
+        grad_norms = torch.tensor(grad_norms)
+        print(f"Epoch {epoch+1}: gradient norm stats — mean: {grad_norms.mean():.4f}, std: {grad_norms.std():.4f}, max: {grad_norms.max():.4f}, min: {grad_norms.min():.4f}")
+        print(f"Epoch {epoch+1} Loss: {epoch_loss / len(train_dataloader):.6f}")
+        # Update the learning rate
+        lr_scheduler.step()
+        #check_gradients(model)
+
+        # print validation loss
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for batch in val_dataloader:
+                batch = batch[0].to(device)
+                target = batch[:, 0:1].float()
+                context = batch[:, 1:]
+
+                mean_pred = model(context.to(device).float(),
+                                   torch.zeros(batch.shape[0], ).to(device), 
+                                   return_dict=False)[0]
+
+                # Calculate the loss
+                val_loss += loss_fn(mean_pred, target).item()
+        val_losses.append(val_loss / len(val_dataloader))
+        print(f"Validation Loss: {val_loss / len(val_dataloader):.6f}")
+        if rmse_const is not None:
+            print(f"Validation RMSE: {np.sqrt(val_loss / len(val_dataloader)) * rmse_const:.6f}")
+
+        if save_model_path and (epoch+1) % 10 == 0:
+            torch.save(model.state_dict(), save_model_path+f"e_{epoch+1}.pt")
+
+    # save model checkpoint
+    if save_model_path:
+        # Save checkpoint
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': lr_scheduler.state_dict() if lr_scheduler else None,
+            'rng_state': torch.get_rng_state(),
+            'cuda_rng_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+            'train_losses': train_losses,
+            'val_losses': val_losses,
+        }, save_model_path+f"final_model_e_{num_epochs}.pt")
+    return model, train_losses, val_losses
+ 
 def train_mean_estimator(model, num_epochs, old_epoch, train_dataloader, val_dataloader, optimizer, lr_scheduler, save_model_path=None, rmse_const=None, is_sequence=True):
     """training loop for diffusion model"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -125,6 +223,8 @@ def predict_mean_eval(model, dataloader, is_sequence=True):
 
     return np.concatenate(losses, axis=0), np.concatenate(predictions, axis=0)
 
+
+
 import pandas as pd
 def sota_split():
     n_splits = 7
@@ -221,24 +321,38 @@ class  MLPModel(nn.Module):
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim // 2)
         self.fc3 = nn.Linear(hidden_dim // 2, output_dim)
+        #self.fc4 = nn.Linear(hidden_dim // 4, output_dim)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(0.1)
         self.batchnorm2 = nn.BatchNorm1d(hidden_dim)
         self.batchnorm3 = nn.BatchNorm1d(hidden_dim // 2)
+        #self.batchnorm4 = nn.BatchNorm1d(hidden_dim // 4)
 
+        self.sequential = nn.Sequential(
+            self.fc1,
+            self.batchnorm2,
+            self.relu,
+            self.dropout,
+            self.fc2,
+            self.batchnorm3,
+            self.relu,
+            self.dropout,
+            self.fc3,
+            # self.batchnorm4,
+            # self.relu,
+            # self.dropout,
+            # self.fc4
+        )
 
-    
     def forward(self, x, t, return_dict=False):
-        x = self.fc1(x.squeeze(-1))
-        x = self.batchnorm2(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-        x = self.fc2(x)
-        x = self.batchnorm3(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-        x = self.fc3(x)
-        return (x.unsqueeze(-1), None)
+        """forward pass of the model"""
+        ndim = x.ndim
+        if ndim == 3:
+            x = x.squeeze(2)
+        x = self.sequential(x)
+        if ndim == 3:
+            x = x.unsqueeze(2)
+        return (x, None)
 
 from torch.utils.data import DataLoader
 from torch.utils.data import TensorDataset
