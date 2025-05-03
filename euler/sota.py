@@ -19,7 +19,7 @@ import json
 import logging
 
 from fco2models.utraining import prep_df, normalize_dss, save_losses_and_png, get_stats
-from fco2models.umeanest import train_mean_estimator, MLPModel
+from fco2models.umeanest import train_mean_estimator, MLPModel, train_pointwise_mlp
 
 np.random.seed(1)
 torch.manual_seed(0)
@@ -30,43 +30,46 @@ batch_size = 2048
 
 logging.info("------------ Starting training ------------------")
 
-def add_xco2(df):
+def add_xco2(df, xco2_mbl):
     selector = df[['lat_005', 'time_1d']].to_xarray()
     # rename the columns to match the xarray dataset
     selector = selector.rename({'lat_005': 'lat', 'time_1d': 'time'})
-    xco2mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
-    matched_xco2 = xco2mbl.sel(**selector, method='nearest').to_series()
+    #xco2mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
+    matched_xco2 = xco2_mbl.sel(**selector, method='nearest').to_series()
     
     df['xco2'] = matched_xco2
 
     return df 
 
+def add_clims(df, co2_clim):
+    selector = df[['lat_005', 'lon_005', 'day_of_year']].to_xarray()
+    # rename the columns to match the xarray dataset
+    selector = selector.rename({'lat_005': 'lat', 'lon_005': 'lon', 'day_of_year': 'dayofyear'})
+    #url = 'https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/co2_clim/prior_dfco2-lgbm-ens_avg-t46y720x1440.zarr/'
+    #co2_clim = xr.open_zarr(url)
+    df['co2_clim8d'] = co2_clim.dfco2_clim_smooth.sel(**selector, method='nearest')
+    return df
+
 dfs = []
+xco2_mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
+co2_clim = xr.open_zarr('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/co2_clim/prior_dfco2-lgbm-ens_avg-t46y720x1440.zarr/')
 for year in range(1982, 2022):
     df = pd.read_parquet(f'../data/SOCATv2024-1d_005deg-colloc-r20250224/SOCATv2024_1d_005deg_collocated_{year}-r20250224.pq')
+    #add day_of_year column
     df.reset_index(inplace=True)
+    df['day_of_year'] = df['time_1d'].dt.dayofyear
     df['year'] = year
-    df = add_xco2(df)
+    df = add_xco2(df, xco2_mbl)
+    df = add_clims(df, co2_clim)
     dfs.append(df)
 
 df = pd.concat(dfs, ignore_index=True)
-print(df.columns)
 
-print(df.xco2.mean(), df.xco2.std())
-print("mean before subtracting xco2")
-print(df.fco2rec_uatm.mean(), df.fco2rec_uatm.std())
-print("mean after subtracting xco2")
-print((df['fco2rec_uatm'] - df['xco2']).mean(), (df['fco2rec_uatm'] - df['xco2']).std())
-
-#add day_of_year column
-df['day_of_year'] = df['time_1d'].dt.dayofyear
-# remove entres with high ice concentration
+# remove entries with high ice concentration
 df = df[df.ice_cci < 0.8]
 # renane lon and lat columns
 df = df.rename(columns={'lon_005':'lon', 'lat_005': 'lat'})
-df = prep_df(df, logger=logging)[0]
-
-
+df = prep_df(df, bound=True, logger=logging)[0]
 
 test_months = pd.date_range('1982-01', '2022-01', freq='7MS').values.astype('datetime64[M]')
 months = df.time_1d.values.astype('datetime64[M]')
@@ -75,24 +78,55 @@ mask_test = np.isin(months, test_months)
 df_train = df[~mask_test]
 df_val = df[mask_test]
 
-# logging.info("select measurements from the northern hemisphere")
-# df_train = df_train[df_train['is_north']]
-# df_val = df_val[df_val['is_north']]
-
 # drop nan rows
 predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'ssh_sla', 
-              'mld_dens_soda', 'xco2', 'sin_day_of_year', 'cos_day_of_year', 
-              'sin_lat', 'sin_lon_cos_lat', 'cos_lon_cos_lat']
+              'mld_dens_soda', 'xco2', 'sin_day_of_year', 'cos_day_of_year',
+              'sin_lat', 'sin_lon_cos_lat', 'cos_lon_cos_lat', 'co2_clim8d'
+              ]
 target = 'fco2rec_uatm'
 df_train = df_train[[target] + predictors].dropna()
 df_val = df_val[[target] + predictors].dropna()
 
+train_ds = df_train.values
+val_ds = df_val.values
+
+import lightgbm as lgb
+from sklearn import metrics
+y_train = train_ds[:, 0]
+X_train = train_ds[:, 1:]
+y_val = val_ds[:, 0]
+X_val = val_ds[:, 1:]
 
 
-train_ds = df_train.values[:, :, np.newaxis]
-val_ds = df_val.values[:, :, np.newaxis]
-# shuffle the data
-np.random.shuffle(train_ds)
+# model = lgb.LGBMRegressor(
+#     n_estimators=300,  # these are just guesses - but probably good enough for this test
+#     learning_rate=0.1, 
+#     num_leaves=84,
+#     min_split_gain=0.05,
+# )
+
+# model.fit(X_train, y_train)
+# y_hat_val = model.predict(X_val)
+# y_hat_train = model.predict(X_train)
+# val_rmse = metrics.root_mean_squared_error(y_val, y_hat_val)
+# print(f"validation RMSE: {val_rmse}")
+# train_rmse = metrics.root_mean_squared_error(y_train, y_hat_train)
+# print(f"train RMSE: {train_rmse}")
+# #bias
+# val_bias = np.mean(y_val - y_hat_val)
+# print(f"validation bias: {val_bias}")
+# train_bias = np.mean(y_train - y_hat_train)
+# print(f"train bias: {train_bias}")
+# # r2
+# val_r2 = metrics.r2_score(y_val, y_hat_val)
+# print(f"validation r2: {val_r2}")
+# train_r2 = metrics.r2_score(y_train, y_hat_train)
+# print(f"train r2: {train_r2}")
+
+# train_ds = np.concatenate([train_ds, y_hat_train.reshape(-1, 1)], axis=1)
+# val_ds = np.concatenate([val_ds, y_hat_val.reshape(-1, 1)], axis=1)
+train_ds = train_ds[:, :, np.newaxis]
+val_ds = val_ds[:, :, np.newaxis]
 
 print(f"train_ds shape: {train_ds.shape}")
 print(f"val_ds shape: {val_ds.shape}")
@@ -105,14 +139,19 @@ mode = 'mean_std'
 train_stats = get_stats(train_ds, logger=logging)
 train_ds, val_ds = normalize_dss([train_ds, val_ds], train_stats, mode, logger=logging)
 
+# remove last dimension
+train_ds = train_ds[:, :, 0]
+val_ds = val_ds[:, :, 0]
 train_dataset = TensorDataset(torch.tensor(train_ds))
 val_dataset = TensorDataset(torch.tensor(val_ds))
 train_dataloader = data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 val_dataloader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+
     
 model_params = {
     "input_dim": train_ds.shape[1] - 1,
-    "hidden_dim": 128,
+    "hidden_dim": 256,
     "output_dim": 1,
 }
 
@@ -163,7 +202,7 @@ with open(save_dir +'hyperparameters.json', 'w') as f:
 
 
 
-model, train_losses, val_losses = train_mean_estimator(model,
+model, train_losses, val_losses = train_pointwise_mlp(model,
                                                        num_epochs=num_epochs, 
                                                        old_epoch=epoch,
                                                        optimizer=optimizer, 
@@ -172,7 +211,7 @@ model, train_losses, val_losses = train_mean_estimator(model,
                                                        val_dataloader=val_dataloader,
                                                        save_model_path=save_dir,
                                                        rmse_const=train_stats['stds'][0],
-                                                       is_sequence=False)
+                                                       )
 
 
 train_losses_old += train_losses
