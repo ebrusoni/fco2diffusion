@@ -21,6 +21,16 @@ def check_gradients(model):
 
 import numpy as np
 
+def add_clims(df, co2_clim):
+    """add climatology data to the dataframe"""
+    selector = df[['lat_005', 'lon_005', 'day_of_year']].to_xarray()
+    # rename the columns to match the xarray dataset
+    selector = selector.rename({'lat_005': 'lat', 'lon_005': 'lon', 'day_of_year': 'dayofyear'})
+    #url = 'https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/co2_clim/prior_dfco2-lgbm-ens_avg-t46y720x1440.zarr/'
+    #co2_clim = xr.open_zarr(url)
+    df['co2_clim8d'] = co2_clim.dfco2_clim_smooth.sel(**selector, method='nearest')
+    return df
+
 # Training function
 def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_scheduler, optimizer, lr_scheduler, save_model_path=None, pos_encodings_start=None):
     """training loop for diffusion model"""
@@ -280,6 +290,7 @@ def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False):
         dss.append(ds)
     return dss
 
+import xarray as xr
 def prep_df(dfs, logger=None, bound=False, index=None, normalize=False):
     """prepare dataframe for training
         - the idea is to use it for "segment independent" feature extraction (which is easier to do in a dataframe)
@@ -315,6 +326,9 @@ def prep_df(dfs, logger=None, bound=False, index=None, normalize=False):
         df['fco2rec_uatm'] = df['fco2rec_uatm'] - df['xco2']
         #logger.info("clip values of fco2 between 0 and 400")
         #df['fco2rec_uatm'] = df['fco2rec_uatm'].clip(lower=None, upper=400)
+        logger.info("add climatology data")
+        co2_clim = xr.open_zarr('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/co2_clim/prior_dfco2-lgbm-ens_avg-t46y720x1440.zarr/')
+        df = add_clims(df, co2_clim)
     
         if bound:
             logger.info("replacing outliers with Nans, fco2rec_uatm > 400")
