@@ -23,9 +23,9 @@ import numpy as np
 
 def add_clims(df, co2_clim):
     """add climatology data to the dataframe"""
-    selector = df[['lat_005', 'lon_005', 'day_of_year']].to_xarray()
+    selector = df[['lat', 'lon', 'day_of_year']].to_xarray()
     # rename the columns to match the xarray dataset
-    selector = selector.rename({'lat_005': 'lat', 'lon_005': 'lon', 'day_of_year': 'dayofyear'})
+    selector = selector.rename({'day_of_year': 'dayofyear'})
     #url = 'https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/co2_clim/prior_dfco2-lgbm-ens_avg-t46y720x1440.zarr/'
     #co2_clim = xr.open_zarr(url)
     df['co2_clim8d'] = co2_clim.dfco2_clim_smooth.sel(**selector, method='nearest')
@@ -227,7 +227,7 @@ def df_to_ds(df,):
 
 import logging as log
 from fco2dataset.ucruise import filter_nans
-def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False):
+def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False, info=None):
     """prepare data for training (only for models working with segments)
          - filters out nans from all predictor variables
          - adds sinusoidal embeddings for lat, lon and day of year if lat, lon and day_of_year are in predictors
@@ -235,6 +235,10 @@ def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False):
     
     logging = make_logger(logging)
     dss = []
+    return_mask = False
+    if info is not None:
+        logging.info("info features: %s", info)
+        return_mask = True
     for df in dfs:
     
         ds_raw = df_to_ds(df)
@@ -243,7 +247,7 @@ def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False):
     
         logging.info("predictors: %s", predictors)
         ds_map = dict(zip(predictors, range(1, len(predictors) + 1)))
-        yX = filter_nans(ds_raw, predictors, col_map)
+        yX, filter_mask = filter_nans(ds_raw, predictors, col_map, return_mask=return_mask)
         print(f"yX shape: {yX.shape}")
     
         # assert np.apply_along_axis(lambda x: np.isnan(x).all(), 1, y).sum() == 0
@@ -255,6 +259,13 @@ def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False):
         
         for i in range(yX.shape[0]):
             ds[:, i, :] = yX[i]
+
+        if info is not None:
+            infos = ds_raw[[col_map[i] for i in info]]
+            infos = infos[:, filter_mask, :]
+            info_ds = np.zeros((n_samples, len(info), n_dims))
+            for i in range(len(info)):
+                info_ds[:, i, :] = infos[i]
         
         if 'lat' in predictors:
             lat_col = ds_map['lat']
@@ -287,7 +298,12 @@ def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False):
             mask = np.zeros((n_samples, 1, n_dims), dtype=bool)
             mask[:, 0, :] = np.isnan(ds[:, 0, :])
             ds = np.concatenate([ds, ~mask], axis=1)
-        dss.append(ds)
+        
+        if info is not None:
+            dss.append((ds, info_ds))
+        else:
+            dss.append(ds)
+
     return dss
 
 import xarray as xr

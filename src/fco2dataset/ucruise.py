@@ -210,7 +210,7 @@ def ds_nanstats(ds):
     plt.bar(range(n_bins + 1), bins_nan_stat)
     plt.show()
 
-def filter_nans(ds, predictors, col_map):
+def filter_nans(ds, predictors, col_map, return_mask=False):
     """
     Filter out samples where any of the predictors contains nans
     """
@@ -221,7 +221,10 @@ def filter_nans(ds, predictors, col_map):
     print("Number of samples after filtering: ", np.sum(not_nan_mask))
     # add the fco2 values to the dataset 
     X = np.concatenate([ds[np.newaxis, col_map['fco2rec_uatm']], X], axis=0)
-    return X[:, not_nan_mask, :]
+    if return_mask:
+        return X[:, not_nan_mask, :], not_nan_mask
+    else:
+        return X[:, not_nan_mask, :], None
 
 def plot_segment(X, y, titles, seg):
     """
