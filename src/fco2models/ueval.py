@@ -134,7 +134,7 @@ def rec_sample(sample_context, model, noise_scheduler, timesteps):
 
     return reconstructed_fco2s, noisy_samples
 
-def rescale(ds, stats, mode):
+def rescale(ds, stats, mode, ignore=[]):
     """
     Rescale the dataset using the given stats.
     ds shape: (n_samples, features, n_bins)
@@ -144,6 +144,8 @@ def rescale(ds, stats, mode):
     train_mins = stats['train_mins']
     train_maxs = stats['train_maxs']
     for i in range(ds.shape[1]):
+        if i in ignore:
+            continue
         if mode == 'mean_std':
             ds[:, i] = ds[:, i] * train_stds[i] + train_means[i]
         elif mode == 'min_max':
