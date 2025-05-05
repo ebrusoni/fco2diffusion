@@ -378,6 +378,7 @@ def normalize_dss(dss, stats, mode, logger=None, ignore=None):
     logger.info("Using given stats for normalization")
     
     logger.info(f"Normalizing data using {mode} normalization")
+    logger.info(f"Not normalizing features: {ignore}")
     
     def normalize(x, i,  mode):
         """normalize the data"""
