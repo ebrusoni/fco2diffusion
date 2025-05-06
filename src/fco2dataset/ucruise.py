@@ -40,7 +40,16 @@ def divide_cruise(cruise, num_windows=64, len_window=5, max_time_delta=pd.Timede
     segs = []
     cur_seg = [0]
     large_time_diffs = []
+    win_count_list = [0]
+    win_count = 0
+    win_dprev_acc = 0
     for (i, dprev) in enumerate(d_diff[1:]):
+        win_dprev_acc += dprev
+        if win_dprev_acc >= len_window:
+            win_count += 1
+            win_dprev_acc = 0
+
+        win_count_list.append(win_count)
         cs += dprev
         if dprev > 20:
             large_time_diffs.append(time_diff.iloc[i + 1])
@@ -60,14 +69,19 @@ def divide_cruise(cruise, num_windows=64, len_window=5, max_time_delta=pd.Timede
     ix_segs = chain(*[[i]*len(seg) for (i, seg) in enumerate(segs)])
     cum_segs = chain(*[list(accumulate(seg)) for seg in segs])
     
-    sdf = pd.DataFrame({'segment_id': list(ix_segs), 'track_length':list(cum_segs)}, index=srt_cruise.index)
+    sdf = pd.DataFrame({'segment_id': list(ix_segs), 
+                        'track_length':list(cum_segs),
+                        'window_id': list(win_count_list),
+                        },
+                        index=srt_cruise.index)
     # ifprint(verbose, sdf.iloc[:4].track_length)
     bins = np.arange(-len_window / 2., track_len + len_window, len_window)
     cut_sdf = pd.cut(sdf.track_length, bins=bins, labels=False)
     
-    srt_cruise.set_index(cruise.index)
-    srt_cruise['bin_id'] = cut_sdf.values
-    srt_cruise['segment_id'] = sdf.segment_id
+    #srt_cruise.set_index(cruise.index)
+    srt_cruise['bin_id'] = cut_sdf.values.astype(np.int32)
+    srt_cruise['segment_id'] = sdf.segment_id.astype(np.int32)
+    srt_cruise['window_id'] = sdf.window_id.astype(np.int32)
     return srt_cruise
 
 
