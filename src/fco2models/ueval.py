@@ -158,7 +158,7 @@ def rescale(ds, stats, mode, ignore=[]):
     return ds 
 
 
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, root_mean_squared_error
+from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from scipy.stats import pearsonr
 def get_error_stats(samples, truth):
     """
@@ -167,7 +167,7 @@ def get_error_stats(samples, truth):
     truth: (n_samples, 1, n_bins)
     """
 
-    means = np.nanmean(samples, axis=1)[:, np.newaxis, :]
+    means = np.mean(samples, axis=1, keepdims=True)
     
     nan_mask = np.isnan(truth)
     rmse = root_mean_squared_error(truth[~nan_mask], means[~nan_mask])
@@ -175,6 +175,7 @@ def get_error_stats(samples, truth):
     r2 = r2_score(truth[~nan_mask], means[~nan_mask])
     #bias
     bias = np.nanmean(truth - means, axis=2)
+    mean_bias = np.nanmean(truth - means)
 
     corrs = np.zeros(truth.shape[0])
     for i in range(truth.shape[0]):
@@ -189,14 +190,14 @@ def get_error_stats(samples, truth):
     print(f"RMSE: {rmse:.4f}")
     print(f"MAE: {mae:.4f}")
     print(f"R2: {r2:.4f}")
-    print(f"Bias: {bias.mean():.4f} ± {bias.std():.4f}")
+    print(f"Bias: {mean_bias:.4f} ± {bias.std():.4f}")
     print(f"Mean correlation: {mean_corr:.4f} ± {mean_corr_std:.4f}")
 
     return dict({
         'rmse': rmse,
         'mae': mae,
         'r2': r2,
-        'bias': bias.mean(),
+        'bias': mean_bias,
         'bias_std': bias.std(),
         'mean_corr': mean_corr,
         'mean_corr_std': mean_corr_std
