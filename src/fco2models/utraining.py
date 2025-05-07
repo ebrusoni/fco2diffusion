@@ -71,7 +71,7 @@ def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_s
             noisy_input = noisy_input.to(device).float()
             
             # Get the model prediction
-            class_labels = None if pos_encodings_start is None else pos_encodings.long()
+            class_labels = None if pos_encodings_start is None else ((pos_encodings.mean(axis=(1, 2)) + 1) / 2 * 1000).long()
             noise_pred = model(noisy_input, timesteps, return_dict=False, class_labels=class_labels)[0]
 
             # Calculate the loss
@@ -292,6 +292,7 @@ def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False, info=None
             # clip to 0-364
             ds[:, ix_day, :] = np.clip(ds[:, ix_day, :] - 1, 0, 364)
             ds[:, ix_day, :] = sinemb_day[ds[:, ix_day, 0].astype(int), :] # just take the first bin for the time feature
+
     
         if with_mask:
             # adding additional channel with nan mask for first column

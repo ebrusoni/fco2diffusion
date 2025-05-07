@@ -1,6 +1,6 @@
 from utils import add_src_and_logger
 lr = 5e-4
-batch_size = 128
+batch_size = 64
 save_dir = f'../models/unet2d_{batch_size}_{lr}/'
 is_renkolab = False
 DATA_PATH, logging = add_src_and_logger(is_renkolab, save_dir)
@@ -55,7 +55,7 @@ logging.info(f"val_ds shape: {val_ds.shape}")
 # normalize the data
 mode = 'min_max'
 train_stats = get_stats(train_ds, logger=logging)
-train_ds, val_ds = normalize_dss([train_ds, val_ds], train_stats, mode, ignore=[7,8,9,10,11],  logger=logging)
+train_ds, val_ds = normalize_dss([train_ds, val_ds], train_stats, mode, ignore=[],  logger=logging)
 
 # print mins and maxs of the data
 for i in range(train_ds.shape[1]):
@@ -95,8 +95,9 @@ model_params = {
     "block_out_channels": (16, 32),
     "down_block_types": down_block_types,
     "up_block_types": up_block_types,
-    "norm_num_groups": 8,
-    #"num_class_embeds": len(positional_encoding)
+    "norm_num_groups": 16,
+    "class_embed_type": "timestep",
+    "num_class_embeds": None, 
 }
 
 model = UNet2DModelWrapper(**model_params)
@@ -137,7 +138,7 @@ else:
 noise_params = {
     "num_train_timesteps": timesteps,
     "beta_schedule": 'squaredcos_cap_v2',
-    "clip_sample_range": 1.0
+    "clip_sample_range": 2.0
     }
 noise_scheduler = DDPMScheduler(**noise_params)
 # save all hyperparameters to a json file
@@ -172,7 +173,7 @@ model, train_losses, val_losses = train_diffusion(model,
                                                   train_dataloader=train_dataloader,
                                                   val_dataloader=val_dataloader,
                                                   save_model_path=save_dir,
-                                                  pos_encodings_start=None,
+                                                  pos_encodings_start=len(predictors) + 1,
                                                   )
 
     
