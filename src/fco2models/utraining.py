@@ -101,7 +101,7 @@ def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_s
             for batch in val_dataloader:
                 timesteps = torch.full((batch[0].shape[0],), t, device=device, dtype=torch.long)
                 noisy_input, noise, nan_mask, timesteps, class_labels = prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, device)
-                noise_pred = model(noisy_input, timesteps, return_dict=False)[0]
+                noise_pred = model(noisy_input, timesteps, return_dict=False, class_labels=class_labels)[0]
                 loss = loss_fn(noise_pred[~nan_mask], noise[~nan_mask])
                 val_loss += loss.item()
             val_losses_t.append(val_loss / len(val_dataloader))
