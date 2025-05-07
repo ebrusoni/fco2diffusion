@@ -85,8 +85,8 @@ num_epochs = 1
 timesteps = 1000
 
 layers_per_block = 2
-down_block_types = ('DownBlock2D', 'AttnDownBlock2D')
-up_block_types = ('AttnUpBlock2D', 'UpBlock2D')
+down_block_types = ('DownBlock2D', 'DownBlock2D')
+up_block_types = ('UpBlock2D', 'UpBlock2D')
 model_params = {
     "sample_size": (13, 64),
     "in_channels": 1,
