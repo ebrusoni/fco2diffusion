@@ -100,7 +100,7 @@ def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_s
             val_loss = 0.0
             for batch in val_dataloader:
                 timesteps = torch.full((batch[0].shape[0],), t, device=device, dtype=torch.long)
-                noisy_input, noise, nan_mask, timesteps = prep_sample(batch, noise_scheduler, timesteps, device)
+                noisy_input, noise, nan_mask, timesteps, class_labels = prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, device)
                 noise_pred = model(noisy_input, timesteps, return_dict=False)[0]
                 loss = loss_fn(noise_pred[~nan_mask], noise[~nan_mask])
                 val_loss += loss.item()
@@ -128,10 +128,11 @@ def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_s
     return model, train_losses, val_losses
 
 
-def prep_sample(batch, noise_scheduler, timesteps, device):
+def prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, device):
     batch = batch[0].to(device)
     target = batch[:, 0:1, :]
-    context = batch[:, 1:, :]
+    context = batch[:, 1:pos_encodings_start, :]
+    pos_encodings = batch[:, pos_encodings_start:, :]
     
     noise = torch.randn_like(target).to(device).float()
     # Replace nan with zeros
@@ -142,7 +143,9 @@ def prep_sample(batch, noise_scheduler, timesteps, device):
     # Concatenate the noisy target with the context
     noisy_input = torch.cat([noisy_target, context, (~nan_mask).float()], dim=1)
     noisy_input = noisy_input.to(device).float()
-    return noisy_input, noise, nan_mask, timesteps
+
+    class_labels = None if pos_encodings_start is None else ((pos_encodings.mean(axis=(1, 2)) + 1) / 2 * 1000).long()
+    return noisy_input, noise, nan_mask, timesteps, class_labels
 
 
 
