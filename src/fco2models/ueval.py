@@ -1,6 +1,32 @@
 import json
 import torch
 from diffusers import DDPMScheduler
+import pandas as pd
+
+def make_result_df(res, ecode_win, name):
+    """make a dataframe from the result of the model"""
+    expocdes_ids = ecode_win[:, 0, :]
+    window_ids = ecode_win[:, 1, :]
+    res_df = pd.DataFrame(res.flatten(), columns=[name])
+    res_df["expocode_id"] = expocdes_ids.flatten().astype(int)
+    res_df["window_id"] = window_ids.flatten().astype(int)
+    # set the index to expocode_id and window_id
+    res_df.set_index(["expocode_id", "window_id"], inplace=True)
+    return res_df.groupby(["expocode_id", "window_id"]).mean()  # take the mean of the predictions for each expocode_id and window_id
+
+def add_res_to_df(res_df, df, name):
+    """add the result of the model to the dataframe, res_df and df have the same index"""
+    df.set_index(["expocode_id", "window_id"], inplace=True)
+    # add the result to the dataframe
+    df[name] = res_df[name]
+    # set the index back to the original index
+    df.reset_index(inplace=True)
+    return df
+
+def get_expocode_map(df):
+    """map every expocode to a number"""
+    expocode_map = {expocode: i for i, expocode in enumerate(df['expocode'].unique())}
+    return expocode_map
 
 def add_src_and_logger(is_renkolab, save_dir):
     import sys

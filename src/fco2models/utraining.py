@@ -580,9 +580,45 @@ def make_monthly_split(df, month_step=7, val_offset=3, leave_out_2021=False):
     val_months = pd.date_range(f'1982-{val_offset}', f'{end_year}-01', freq='7MS').values.astype('datetime64[M]')
     # find mean date for each expocode so that we filter entire cruises
     expocode_dates = df.groupby(['expocode']).mean().time_1d.apply(lambda date: np.datetime64(date.strftime('%Y-%m')))
-    print(expocode_dates.head())
     mask_test = expocode_dates.isin(test_months)
     mask_val = expocode_dates.isin(val_months) & ~mask_test # those should not overlap but just in case
     mask_train = ~mask_test & ~mask_val
 
     return mask_train, mask_val, mask_test
+
+def get_stats_df(df, cols, logger=None):
+    """get stats for the dataframe df"""
+    logger = make_logger(logger)
+    means = []
+    stds = []
+    mins = []
+    maxs = []
+    for col in cols:
+        means.append(np.nanmean(df[col]).astype(float))
+        stds.append(np.nanstd(df[col]).astype(float))
+        mins.append(np.nanmin(df[col]).astype(float))
+        maxs.append(np.nanmax(df[col]).astype(float))
+    
+    logger.info(f"Means: {means}")
+    logger.info(f"Stds: {stds}")
+    logger.info(f"Mins: {mins}")
+    logger.info(f"Maxs: {maxs}")
+    
+    return {
+        'means': means,
+        'stds': stds,
+        'mins': mins,
+        'maxs': maxs
+    }
+
+def get_context_mask(dss, logger=None):
+    """returns mask for filtering out samples with Nans in the context variables"""
+    logger = make_logger(logger)
+    masks = []
+    for ds in dss:
+        context_ds = ds[:, 1:, :]
+        not_nan_mask = np.isnan(context_ds).any(axis=2)
+        not_nan_mask = np.sum(not_nan_mask, axis=1) == 0
+        masks.append(not_nan_mask)
+        logger.info(f"Number of samples after filtering: {np.sum(not_nan_mask)}")
+    return masks
