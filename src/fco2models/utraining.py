@@ -20,17 +20,6 @@ def check_gradients(model):
     print(f"Total gradient norm: {total_norm}")
 
 import numpy as np
-
-def add_clims(df, co2_clim):
-    """add climatology data to the dataframe"""
-    selector = df[['lat', 'lon', 'day_of_year']].to_xarray()
-    # rename the columns to match the xarray dataset
-    selector = selector.rename({'day_of_year': 'dayofyear'})
-    #url = 'https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/co2_clim/prior_dfco2-lgbm-ens_avg-t46y720x1440.zarr/'
-    #co2_clim = xr.open_zarr(url)
-    df['co2_clim8d'] = co2_clim.dfco2_clim_smooth.sel(**selector, method='nearest')
-    return df
-
 # Training function
 def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_scheduler, optimizer, lr_scheduler, save_model_path=None, pos_encodings_start=None):
     """training loop for diffusion model"""
@@ -310,6 +299,26 @@ def prepare_segment_ds(dfs, predictors, logging=None, with_mask=False, info=None
 
     return dss
 
+def add_clims(df, co2_clim):
+    """add climatology data to the dataframe"""
+    selector = df[['lat', 'lon', 'day_of_year']].to_xarray()
+    # rename the columns to match the xarray dataset
+    selector = selector.rename({'day_of_year': 'dayofyear'})
+    #url = 'https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/co2_clim/prior_dfco2-lgbm-ens_avg-t46y720x1440.zarr/'
+    #co2_clim = xr.open_zarr(url)
+    df['co2_clim8d'] = co2_clim.dfco2_clim_smooth.sel(**selector, method='nearest')
+    return df
+
+def add_xco2(df, xco2_mbl):
+    selector = df[['lat', 'time_1d']].to_xarray()
+    # rename the columns to match the xarray dataset
+    selector = selector.rename({'time_1d': 'time'})
+    #xco2mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
+    matched_xco2 = xco2_mbl.sel(**selector, method='nearest').to_series()
+    
+    df['xco2'] = matched_xco2
+
+    return df 
 import xarray as xr
 def prep_df(dfs, logger=None, bound=False, index=None, normalize=False):
     """prepare dataframe for training
@@ -324,6 +333,9 @@ def prep_df(dfs, logger=None, bound=False, index=None, normalize=False):
     res = []
     for df in dfs:
         df.reset_index(inplace=True)
+        # add day of year feature if not present
+        if 'day_of_year' not in df.columns:
+            df['day_of_year'] = df['time_1d'].dt.dayofyear
     
         logger.info("salinity stacking")
         df['sss_cci'] = df['sss_cci'].fillna(df['salt_soda'])
@@ -341,14 +353,20 @@ def prep_df(dfs, logger=None, bound=False, index=None, normalize=False):
         df['sin_lon'] = np.sin(df['lon'] * np.pi / 180)
         df['cos_lon'] = np.cos(df['lon'] * np.pi / 180)
         df['is_north'] = df['lat'] > 0
-        
-        logger.info("removing atmospheric co2 levels from fco2rec_uatm")
-        df['fco2rec_uatm'] = df['fco2rec_uatm'] - df['xco2']
+    
         #logger.info("clip values of fco2 between 0 and 400")
         #df['fco2rec_uatm'] = df['fco2rec_uatm'].clip(lower=None, upper=400)
         logger.info("add climatology data")
         co2_clim = xr.open_zarr('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/co2_clim/prior_dfco2-lgbm-ens_avg-t46y720x1440.zarr/')
         df = add_clims(df, co2_clim)
+        
+        # add xco2 data if not present
+        if 'xco2' not in df.columns:
+            xco2_mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
+            df = add_xco2(df, xco2_mbl)
+        
+        logger.info("removing xco2 levels from fco2rec_uatm")
+        df['fco2rec_uatm'] = df['fco2rec_uatm'] - df['xco2']
     
         if bound:
             logger.info("replacing outliers with Nans, fco2rec_uatm > 400")
@@ -512,3 +530,59 @@ def save_losses_and_png_diffusion(train_losses, val_losses, save_dir, t_tot):
     plt.title('Training and Validation Losses')
     plt.savefig(save_dir + 'losses.png')
     plt.show()
+
+# STUFF FOR NEW DATASET
+def get_segments_random(df, cols, num_windows=64, n=3):
+    """extraxt arrays of size num_windows from the dataframe df randomly"""
+
+
+    # Get the number of rows in the dataframe
+    num_rows = df.shape[0]
+
+    if num_rows < num_windows:
+        return np.full((1, len(cols), num_windows), np.nan, dtype=np.float32) # Return NaN array if not enough data
+    elif num_rows == num_windows:
+        starting_indices = [0] # Only one segment possible
+    else:
+        starting_indices = np.random.randint(0, num_rows - num_windows, size=(num_rows // num_windows) * n)
+    # Ensure that starting indices are unique and sorted
+    starting_indices = np.unique(starting_indices)
+    num_segments = len(starting_indices)
+    cruise_ds = np.zeros((num_segments, len(cols), num_windows), dtype=np.float32)
+
+    starting_indices.sort()
+    for i, start in enumerate(starting_indices):
+        cruise_ds[i] = df[cols].iloc[start:start + num_windows].values.T
+
+    return cruise_ds
+
+def get_segments(df, cols, num_windows=64, step=64, offset=0):
+    """extract arrays of size num_windows from the dataframe df.
+       The idea is to use this only for evaluating the model on the test set."""
+    # Get the number of rows in the dataframe
+    num_rows = df.shape[0]
+    starting_indices = np.arange(offset, num_rows - num_windows, step)
+
+    num_segments = len(starting_indices)
+    cruise_ds = np.zeros((num_segments, len(cols), num_windows), dtype=np.float32)
+
+    for i, start in enumerate(starting_indices):
+        cruise_ds[i] = df[cols].iloc[start:start + num_windows].values.T
+
+    return cruise_ds
+
+def make_monthly_split(df, month_step=7, val_offset=3, leave_out_2021=False):
+    end_year = 2022 if not leave_out_2021 else 2021
+    print(f"Splitting data into train/val/test with parameters: month_step={month_step}, val_offset={val_offset}, leave_out_2021={leave_out_2021}")
+
+    # list of months to use for testing and validation
+    test_months = pd.date_range('1982-01', f'{end_year}-01', freq='7MS').values.astype('datetime64[M]')
+    val_months = pd.date_range(f'1982-{val_offset}', f'{end_year}-01', freq='7MS').values.astype('datetime64[M]')
+    # find mean date for each expocode so that we filter entire cruises
+    expocode_dates = df.groupby(['expocode']).mean().time_1d.apply(lambda date: np.datetime64(date.strftime('%Y-%m')))
+    print(expocode_dates.head())
+    mask_test = expocode_dates.isin(test_months)
+    mask_val = expocode_dates.isin(val_months) & ~mask_test # those should not overlap but just in case
+    mask_train = ~mask_test & ~mask_val
+
+    return mask_train, mask_val, mask_test
