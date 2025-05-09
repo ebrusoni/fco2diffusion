@@ -92,7 +92,8 @@ VARIABLES = {
         'longitude': 'lon'}
         }
 
-def collocate(df, date, save_path):
+#def collocate(df, date, save_path):
+def get_day_data(date, save_path):
 
     dict_catalog = lambda date: {
         'globcolour': f'chl_globcolour/{date.strftime('%Y')}/{date.strftime("%Y%m%d")}_cmems_obs-oc_glo_bgc-plankton_my_l4-gapfree-multi-4km_P1D.nc',
@@ -134,14 +135,36 @@ def collocate(df, date, save_path):
             print(f"{key} data already exists at {local_filename}")
     local_paths = dict(local_paths)
     
+    # df['time'] = date
+    # df.reset_index(inplace=True)
+    # coords = ['lat', 'lon', 'time']
+    # selection = df[coords].to_xarray()   
+    # df_list = [df]
+    dss = dict({})
+    for key, local_path in local_paths.items():
+        print(f"Reading {key} data from {local_path}")
+        ds = _load_netcdf(local_path, tuple(VARIABLES[key].items()))
+        dss[key] = ds
+        # df_matched = ds.sel(selection, method='nearest').to_dataframe()
+        # df_matched = rename_coords(ds, df_matched, key)
+        # df_list.append(df_matched)
+    
+    
+    # df_collocated = pd.concat(df_list, axis=1)
+
+    # return df_collocated
+    return dss
+
+def collocate(df, date, save_path):
+    """Collocate the data from the dataframe with the data from the NetCDF files."""
+    dss = get_day_data(date, save_path)
     df['time'] = date
     df.reset_index(inplace=True)
     coords = ['lat', 'lon', 'time']
     selection = df[coords].to_xarray()   
     df_list = [df]
-    for key, local_path in local_paths.items():
-        print(f"Reading {key} data from {local_path}")
-        ds = _load_netcdf(local_path, tuple(VARIABLES[key].items()))
+    for key, ds in dss.items():
+        print(f"Reading {key} data from {ds}")
         df_matched = ds.sel(selection, method='nearest').to_dataframe()
         df_matched = rename_coords(ds, df_matched, key)
         df_list.append(df_matched)
@@ -149,3 +172,6 @@ def collocate(df, date, save_path):
     df_collocated = pd.concat(df_list, axis=1)
 
     return df_collocated
+
+
+    
