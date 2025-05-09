@@ -21,9 +21,10 @@ def check_gradients(model):
 
 import numpy as np
 # Training function
-def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataloader, noise_scheduler, optimizer, lr_scheduler, save_model_path=None, pos_encodings_start=None):
+def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataloader, noise_scheduler, optimizer, lr_scheduler, save_model_path=None, pos_encodings_start=None, device=None):
     """training loop for diffusion model"""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}")
     model.to(device)
     

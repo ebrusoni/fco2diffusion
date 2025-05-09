@@ -105,13 +105,8 @@ def count_trainable_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Number of trainable parameters: {count_trainable_parameters(model)}")
 
-# model_params = {
-#     "input_dim": 64*(ds.shape[1] + 1),
-#     "output_dim": 64,
-#     "hidden_dims": [64*5, 64*3],
-#     "dropout_prob": 0.0
-#     }
-# model = MLP(**model_params, num_timesteps=timesteps)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
 
 optimizer = optim.AdamW(model.parameters(), lr=lr)
 
@@ -175,6 +170,7 @@ model, train_losses, val_losses = train_diffusion(model,
                                                   val_dataloader=val_dataloader,
                                                   save_model_path=save_dir,
                                                   pos_encodings_start=len(predictors) + 1,
+                                                  device=device,
                                                   )
 
     
