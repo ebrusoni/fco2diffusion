@@ -1,8 +1,8 @@
 from utils import add_src_and_logger
-lr = 5e-4
-batch_size = 64
-save_dir = f'../models/unet2d_{batch_size}_{lr}/'
-is_renkolab = False
+lr = 1e-3
+batch_size = 128
+save_dir = f'../models/unet2d_clim_constlr/'
+is_renkolab = True
 DATA_PATH, logging = add_src_and_logger(is_renkolab, save_dir)
     
 import pandas as pd
@@ -12,7 +12,7 @@ import torch.optim as optim
 import torch.utils.data as data
 import numpy as np
 # import wandb
-from diffusers.optimization import get_cosine_schedule_with_warmup
+from diffusers.optimization import get_cosine_schedule_with_warmup, get_constant_schedule
 from diffusers import DDPMScheduler, UNet1DModel
 from fco2models.utraining import train_diffusion, load_checkpoint, prepare_segment_ds, normalize_dss, prep_df, save_losses_and_png_diffusion, get_stats
 from torch.utils.data import TensorDataset
@@ -40,7 +40,18 @@ df_2021 = pd.read_parquet(DATA_PATH+'df_100km_xco2_2021.pq')
 
 df_train, df_val, df_2021 = prep_df([df_train, df_val, df_2021], index = ['segment', 'bin'], logger=logging, bound=True)
 
-predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'ssh_sla', 'mld_dens_soda', 'xco2']
+def clip_percentile(df):
+    logging.info("clipping values between None and 99th percentile")
+    fco2rec_uatm_95th = df['fco2rec_uatm'].quantile(0.95)
+    fco2rec_uatm_5th = df['fco2rec_uatm'].quantile(0.05)
+    df['fco2rec_uatm'] = df['fco2rec_uatm'].clip(lower=fco2rec_uatm_5th, upper=fco2rec_uatm_95th)
+    return df
+
+#df_train = clip_percentile(df_train)
+#df_val = clip_percentile(df_val)
+#df_2021 = clip_percentile(df_2021)
+
+predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'ssh_sla', 'mld_dens_soda', 'xco2', 'co2_clim8d']
 positional_encoding = ['sin_day_of_year', 'cos_day_of_year', 'sin_lat', 'sin_lon_cos_lat', 'cos_lon_cos_lat']
 all_cols = predictors + positional_encoding
 train_ds, val_ds, val_ds_2021  = prepare_segment_ds([df_train, df_val, df_2021], all_cols, logging=logging)
@@ -81,7 +92,7 @@ print(f"val_ds shape: {val_ds.shape}")
 # logging.info("Using UNet1DModel")
 
 # model = UNet1DModel(**model_params)
-num_epochs = 1
+num_epochs = 120
 timesteps = 1000
 
 layers_per_block = 2
@@ -96,8 +107,8 @@ model_params = {
     "down_block_types": down_block_types,
     "up_block_types": up_block_types,
     "norm_num_groups": 16,
-    "class_embed_type": "timestep",
-    "num_class_embeds": None, 
+    #"class_embed_type": "timestep",
+    #"num_class_embeds": None, 
 }
 
 model = UNet2DModelWrapper(**model_params)
@@ -105,9 +116,15 @@ def count_trainable_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Number of trainable parameters: {count_trainable_parameters(model)}")
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
+# model_params = {
+#     "input_dim": 64*(ds.shape[1] + 1),
+#     "output_dim": 64,
+#     "hidden_dims": [64*5, 64*3],
+#     "dropout_prob": 0.0
+#     }
+# model = MLP(**model_params, num_timesteps=timesteps)
 
+model.to('cuda')
 optimizer = optim.AdamW(model.parameters(), lr=lr)
 
 
@@ -117,12 +134,12 @@ train_dataloader = data.DataLoader(train_dataset, batch_size=batch_size, shuffle
 val_dataloader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
 lr_params = {
-    "num_warmup_steps": 0.05 * num_epochs * len(train_dataloader), 
-    "num_training_steps": num_epochs * len(train_dataloader)
+    #"num_warmup_steps": 0.05 * num_epochs * len(train_dataloader), 
+    #"num_training_steps": num_epochs * len(train_dataloader)
     }
-lr_scheduler = get_cosine_schedule_with_warmup(optimizer, **lr_params)
+lr_scheduler = get_constant_schedule(optimizer, **lr_params)
 
-checkpoint_path = None
+checkpoint_path = "../models/unet2d_clim_constlr/final_model_e_100.pt"
 if checkpoint_path is not None:
     model, optimizer, lr_scheduler, epoch, train_losses_old, val_losses_old = load_checkpoint(checkpoint_path, model, optimizer, lr_scheduler) 
 else:
@@ -162,15 +179,14 @@ with open(save_dir +'hyperparameters.json', 'w') as f:
 
 model, train_losses, val_losses = train_diffusion(model,
                                                   num_epochs=num_epochs,
-                                                  old_epoch=epoch, 
+                                                  old_epochs=epoch,
                                                   optimizer=optimizer, 
                                                   lr_scheduler=lr_scheduler, 
                                                   noise_scheduler=noise_scheduler, 
                                                   train_dataloader=train_dataloader,
                                                   val_dataloader=val_dataloader,
                                                   save_model_path=save_dir,
-                                                  pos_encodings_start=len(predictors) + 1,
-                                                  device=device,
+                                                  pos_encodings_start=None,
                                                   )
 
     
