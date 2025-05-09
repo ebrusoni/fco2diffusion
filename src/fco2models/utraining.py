@@ -21,7 +21,7 @@ def check_gradients(model):
 
 import numpy as np
 # Training function
-def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_scheduler, optimizer, lr_scheduler, save_model_path=None, pos_encodings_start=None):
+def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataloader, noise_scheduler, optimizer, lr_scheduler, save_model_path=None, pos_encodings_start=None):
     """training loop for diffusion model"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}")
@@ -34,7 +34,7 @@ def train_diffusion(model, num_epochs, train_dataloader, val_dataloader, noise_s
     # wandb.watch(model)
     train_losses = []
     val_losses = []
-    for epoch in range(num_epochs):
+    for epoch in range(old_epoch, num_epochs):
         model.train()
         epoch_loss = 0.0
         progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")

@@ -166,7 +166,8 @@ with open(save_dir +'hyperparameters.json', 'w') as f:
 
 
 model, train_losses, val_losses = train_diffusion(model,
-                                                  num_epochs=num_epochs - epoch, 
+                                                  num_epochs=num_epochs,
+                                                  old_epoch=epoch, 
                                                   optimizer=optimizer, 
                                                   lr_scheduler=lr_scheduler, 
                                                   noise_scheduler=noise_scheduler, 
