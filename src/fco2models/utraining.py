@@ -70,7 +70,7 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
             noisy_input = noisy_input.to(device).float()
             
             # Get the model prediction
-            class_labels = None if pos_encodings_start is None else class_embedder(pos_encodings)
+            class_labels = None if pos_encodings_start is None else class_embedder(pos_encodings.int())
             noise_pred = model(noisy_input, timesteps, return_dict=False, class_labels=class_labels)[0]
 
             # Calculate the loss
@@ -143,7 +143,7 @@ def prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, class_em
     noisy_input = torch.cat([noisy_target, context, (~nan_mask).float()], dim=1)
     noisy_input = noisy_input.to(device).float()
 
-    class_labels = None if pos_encodings_start is None else class_embedder(pos_encodings)
+    class_labels = None if pos_encodings_start is None else class_embedder(pos_encodings.int())
     return noisy_input, noise, nan_mask, timesteps, class_labels
 
 

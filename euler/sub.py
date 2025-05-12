@@ -54,6 +54,7 @@ def clip_percentile(df):
 predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'ssh_sla', 'mld_dens_soda', 'xco2', 'co2_clim8d']
 positional_encoding = ['sin_day_of_year', 'cos_day_of_year', 'sin_lat', 'sin_lon_cos_lat', 'cos_lon_cos_lat']
 df_train, df_val, df_2021 = quantize_positional_encodings([df_train, df_val, df_2021], positional_encoding, 100, logger=logging)
+print(df_train[positional_encoding].max(), df_train[positional_encoding].min())
 all_cols = predictors + positional_encoding
 train_ds, val_ds, val_ds_2021  = prepare_segment_ds([df_train, df_val, df_2021], all_cols, logging=logging)
 val_ds = np.concatenate([val_ds, val_ds_2021], axis = 0)
@@ -67,7 +68,7 @@ logging.info(f"val_ds shape: {val_ds.shape}")
 # normalize the data
 mode = 'min_max'
 train_stats = get_stats(train_ds, logger=logging)
-train_ds, val_ds = normalize_dss([train_ds, val_ds], train_stats, mode, ignore=[],  logger=logging)
+train_ds, val_ds = normalize_dss([train_ds, val_ds], train_stats, mode, ignore=[8,9,10,11,12],  logger=logging)
 
 # print mins and maxs of the data
 for i in range(train_ds.shape[1]):
@@ -108,7 +109,7 @@ model_params = {
     "down_block_types": down_block_types,
     "up_block_types": up_block_types,
     "norm_num_groups": 16,
-    "class_embed_type": "Identity",
+    "class_embed_type": "identity",
     #"num_class_embeds": None, 
 }
 
@@ -177,9 +178,9 @@ with open(save_dir +'hyperparameters.json', 'w') as f:
     param_dict = json.dumps(param_dict, indent=4)
     f.write(param_dict)
 
-class_embedder = ClassEmbedding(dim_classes=len(positional_encoding), 
+class_embedder = ClassEmbedding(num_condition_dimensions=len(positional_encoding), 
                                 output_dim=16*4, 
-                                num_classes=[100]*len(positional_encoding)
+                                num_classes_per_dimension=[100]*len(positional_encoding)
                                 )
 model, train_losses, val_losses = train_diffusion(model,
                                                   num_epochs=num_epochs,
@@ -190,7 +191,8 @@ model, train_losses, val_losses = train_diffusion(model,
                                                   train_dataloader=train_dataloader,
                                                   val_dataloader=val_dataloader,
                                                   save_model_path=save_dir,
-                                                  pos_encodings_start=None,
+                                                  pos_encodings_start=len(predictors) + 1,
+                                                  class_embedder=class_embedder,
                                                   )
 
     

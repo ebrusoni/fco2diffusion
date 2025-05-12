@@ -127,44 +127,53 @@ class ConvNet(nn.Module):
 
 
 class ClassEmbedding(nn.Module):
-    def __init__(self, dim_classes, output_dim, num_classes):
+    def __init__(self, num_condition_dimensions, output_dim, num_classes_per_dimension):
         """
         Class embedding layer for the UNet model.
         
         Args:
-            dim_classes (int): Dimension of the class embedding.
-            output_dim (int): Dimension of the output.
-            num_classes (int): Number of classes.
+            num_condition_dimensions (int): Number of condition dimensions (5 in your case)
+            output_dim (int): Dimension of the output embedding
+            num_classes_per_dimension (list): List of number of classes for each dimension
         """
         super(ClassEmbedding, self).__init__()
         
-        self.dim_classes = dim_classes
+        self.num_condition_dimensions = num_condition_dimensions
         self.output_dim = output_dim
+        
+        # Create an embedding layer for each condition dimension
         embedding_nets = []
-        for i in range(len(num_classes)):
-            embedding_nets.append(nn.Embedding(num_classes[i], self.output_dim))
+        for i in range(num_condition_dimensions):
+            embedding_nets.append(nn.Embedding(num_classes_per_dimension[i], output_dim))
         self.embedding = nn.ModuleList(embedding_nets)
-
+        
+        # Optional projection to match UNet's expected embedding dimension
+        # Uncomment if needed
+        # self.projection = nn.Linear(output_dim, block_out_channels[0] * 4)
+    
     def forward(self, class_labels):
         """
         Forward pass through the class embedding layer.
         
         Args:
-            class_labels (torch.Tensor): Class labels tensor of shape (batch_size, num_classes).
+            class_labels (torch.Tensor): Class labels tensor of shape (batch_size, num_condition_dimensions)
             
         Returns:
-            torch.Tensor: Class embeddings tensor of shape (batch_size, output_dim).
+            torch.Tensor: Combined class embeddings tensor of shape (batch_size, output_dim)
         """
         # Ensure class_labels is a 2D tensor
         if len(class_labels.shape) == 1:
             class_labels = class_labels.unsqueeze(1)
+
+        # just take first entry of each segment for emebedding
+        class_labels = class_labels[:, :, 0]
         
-        # Get the embeddings for each class label
-        embeddings = [self.embedding[i](class_labels[:, i]) for i in range(self.dim_classes)]
+        # Get the embeddings for each condition dimension
+        embeddings_sum = torch.zeros((class_labels.shape[0], self.output_dim), device=class_labels.device)
+        for i in range(self.num_condition_dimensions):
+            embeddings_sum += self.embedding[i](class_labels[:, i])
         
-        # Concatenate the embeddings along the last dimension
-        embeddings = torch.stack(embeddings, dim=-1)
-        return embeddings.sum(dim=-1)  # Sum the embeddings along the last dimension
+        return embeddings_sum
 
     
 
