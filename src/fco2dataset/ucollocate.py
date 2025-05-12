@@ -155,16 +155,19 @@ def get_day_data(date, save_path):
     # return df_collocated
     return dss
 
-def collocate(df, date, save_path):
+def collocate(df, date, save_path, dss=None, verbose=True):
     """Collocate the data from the dataframe with the data from the NetCDF files."""
-    dss = get_day_data(date, save_path)
+    if dss is None:
+        # If dss is not provided, load the data from the NetCDF files
+        dss = get_day_data(date, save_path)
     df['time'] = date
     df.reset_index(inplace=True)
     coords = ['lat', 'lon', 'time']
     selection = df[coords].to_xarray()   
     df_list = [df]
     for key, ds in dss.items():
-        print(f"Reading {key} data from {ds}")
+        if verbose:
+            print(f"Reading {key} data from {ds}")
         df_matched = ds.sel(selection, method='nearest').to_dataframe()
         df_matched = rename_coords(ds, df_matched, key)
         df_list.append(df_matched)
