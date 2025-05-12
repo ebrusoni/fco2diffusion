@@ -157,6 +157,7 @@ def full_denoise(model, noise_scheduler, context_loader, jump=None, pos_encoding
         context = context[:, 1:pos_encodings_start, :]
         pos_encodings = context_batch[:, pos_encodings_start:, :]
         # context = context.unsqueeze(0)
+        
         sample = torch.randn((context.shape[0], 1, context.shape[2])).to(device)
         mask = torch.ones_like(sample).float().to(device)
         sample_context = torch.zeros(context.shape[0], context.shape[1] + 2, context.shape[2]).to(device)
