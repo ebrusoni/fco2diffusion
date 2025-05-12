@@ -19,6 +19,11 @@ def check_gradients(model):
     total_norm = total_norm ** 0.5
     print(f"Total gradient norm: {total_norm}")
 
+def pos_to_timestep(pos_encodings, noise_scheduler):
+    # since I am using the same embedding for timesteps and positions, I have to map them to the same range
+    # this is probably nonsensical, I have five positions and I just take the mean of the positions to get a single values in [0, noise_scheduler.config.num_train_timesteps]
+
+    return ((pos_encodings.mean(axis=(1, 2)) + 1) / 2 * noise_scheduler.config.num_train_timesteps).long()
 import numpy as np
 # Training function
 def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataloader, noise_scheduler, optimizer, lr_scheduler, save_model_path=None, pos_encodings_start=None, device=None):
@@ -61,7 +66,7 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
             noisy_input = noisy_input.to(device).float()
             
             # Get the model prediction
-            class_labels = None if pos_encodings_start is None else ((pos_encodings.mean(axis=(1, 2)) + 1) / 2 * 1000).long()
+            class_labels = None if pos_encodings_start is None else pos_to_timestep(pos_encodings, noise_scheduler)
             noise_pred = model(noisy_input, timesteps, return_dict=False, class_labels=class_labels)[0]
 
             # Calculate the loss
@@ -139,7 +144,7 @@ def prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, device):
 
 
 
-def full_denoise(model, noise_scheduler, context_loader, jump=None):
+def full_denoise(model, noise_scheduler, context_loader, jump=None, pos_encodings_start=None):
     """full denoising loop for diffusion model"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}")
@@ -149,6 +154,8 @@ def full_denoise(model, noise_scheduler, context_loader, jump=None):
     context_loader = tqdm(context_loader, desc=f"Inference")
     for context_batch in context_loader:
         context = context_batch.to(device)
+        context = context[:, 1:pos_encodings_start, :]
+        pos_encodings = context_batch[:, pos_encodings_start:, :]
         # context = context.unsqueeze(0)
         sample = torch.randn((context.shape[0], 1, context.shape[2])).to(device)
         mask = torch.ones_like(sample).float().to(device)
@@ -165,7 +172,8 @@ def full_denoise(model, noise_scheduler, context_loader, jump=None):
             sample_context[:, 0:1, :] = sample
             # Get model pred
             with torch.no_grad():
-                residual = model(sample_context, t, return_dict=False)[0]
+                class_labels = None if pos_encodings_start is None else pos_to_timestep(pos_encodings, noise_scheduler)
+                residual = model(sample_context, t, return_dict=False, class_labels=class_labels)[0]
 
             output_scheduler = noise_scheduler.step(residual, t, sample)
             if jump is not None:
