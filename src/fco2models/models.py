@@ -126,6 +126,45 @@ class ConvNet(nn.Module):
         return (x, None)
 
 
+class ClassEmbedding(nn.Module):
+    def __init__(self, dim_classes, output_dim, num_classes):
+        """
+        Class embedding layer for the UNet model.
+        
+        Args:
+            dim_classes (int): Dimension of the class embedding.
+            output_dim (int): Dimension of the output.
+            num_classes (int): Number of classes.
+        """
+        super(ClassEmbedding, self).__init__()
+        
+        self.dim_classes = dim_classes
+        self.output_dim = output_dim
+        embedding_nets = []
+        for i in range(len(num_classes)):
+            embedding_nets.append(nn.Embedding(num_classes[i], self.output_dim))
+        self.embedding = nn.ModuleList(embedding_nets)
+
+    def forward(self, class_labels):
+        """
+        Forward pass through the class embedding layer.
+        
+        Args:
+            class_labels (torch.Tensor): Class labels tensor of shape (batch_size, num_classes).
+            
+        Returns:
+            torch.Tensor: Class embeddings tensor of shape (batch_size, output_dim).
+        """
+        # Ensure class_labels is a 2D tensor
+        if len(class_labels.shape) == 1:
+            class_labels = class_labels.unsqueeze(1)
+        
+        # Get the embeddings for each class label
+        embeddings = [self.embedding[i](class_labels[:, i]) for i in range(self.dim_classes)]
+        
+        # Concatenate the embeddings along the last dimension
+        embeddings = torch.stack(embeddings, dim=-1)
+        return embeddings.sum(dim=-1)  # Sum the embeddings along the last dimension
 
     
 

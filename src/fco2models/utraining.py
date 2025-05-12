@@ -9,6 +9,7 @@ from diffusers.optimization import get_cosine_schedule_with_warmup
 from diffusers import DDPMScheduler, UNet1DModel
 import time
 import pandas as pd
+from fco2models.models import ClassEmbedding
 
 def check_gradients(model):
     total_norm = 0
@@ -22,16 +23,19 @@ def check_gradients(model):
 def pos_to_timestep(pos_encodings, noise_scheduler):
     # since I am using the same embedding for timesteps and positions, I have to map them to the same range
     # this is probably nonsensical, I have five positions and I just take the mean of the positions to get a single values in [0, noise_scheduler.config.num_train_timesteps]
-
     return ((pos_encodings.mean(axis=(1, 2)) + 1) / 2 * noise_scheduler.config.num_train_timesteps).long()
+
 import numpy as np
 # Training function
-def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataloader, noise_scheduler, optimizer, lr_scheduler, save_model_path=None, pos_encodings_start=None, device=None):
+def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataloader, noise_scheduler, optimizer, lr_scheduler, save_model_path=None, 
+                    pos_encodings_start=None, device=None, class_embedder=None):
     """training loop for diffusion model"""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}")
     model.to(device)
+    if class_embedder is not None:
+        class_embedder.to(device)
     
     loss_fn = nn.MSELoss()
     
@@ -66,7 +70,7 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
             noisy_input = noisy_input.to(device).float()
             
             # Get the model prediction
-            class_labels = None if pos_encodings_start is None else pos_to_timestep(pos_encodings, noise_scheduler)
+            class_labels = None if pos_encodings_start is None else class_embedder(pos_encodings)
             noise_pred = model(noisy_input, timesteps, return_dict=False, class_labels=class_labels)[0]
 
             # Calculate the loss
@@ -95,7 +99,7 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
             val_loss = 0.0
             for batch in val_dataloader:
                 timesteps = torch.full((batch[0].shape[0],), t, device=device, dtype=torch.long)
-                noisy_input, noise, nan_mask, timesteps, class_labels = prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, device)
+                noisy_input, noise, nan_mask, timesteps, class_labels = prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, class_embedder, device)
                 noise_pred = model(noisy_input, timesteps, return_dict=False, class_labels=class_labels)[0]
                 loss = loss_fn(noise_pred[~nan_mask], noise[~nan_mask])
                 val_loss += loss.item()
@@ -123,7 +127,7 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
     return model, train_losses, val_losses
 
 
-def prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, device):
+def prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, class_embedder, device):
     batch = batch[0].to(device)
     target = batch[:, 0:1, :]
     context = batch[:, 1:pos_encodings_start, :]
@@ -139,7 +143,7 @@ def prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, device):
     noisy_input = torch.cat([noisy_target, context, (~nan_mask).float()], dim=1)
     noisy_input = noisy_input.to(device).float()
 
-    class_labels = None if pos_encodings_start is None else ((pos_encodings.mean(axis=(1, 2)) + 1) / 2 * 1000).long()
+    class_labels = None if pos_encodings_start is None else class_embedder(pos_encodings)
     return noisy_input, noise, nan_mask, timesteps, class_labels
 
 
@@ -391,6 +395,18 @@ def prep_df(dfs, logger=None, bound=False, index=None, normalize=False):
     
     return res
 
+def quantize_positional_encodings(dfs, positional_encodings, num_bins, logger=None):
+    logger = make_logger(logger)
+    logger.info(f"quantizing positional encodings {positional_encodings} to {num_bins} bins") 
+    res = []
+    for df in dfs:
+        # assumes all positional encodings are in the same range [-1,1]
+        df[positional_encodings] = (((df[positional_encodings] + 1) / 2) * num_bins).round().astype(int)
+        # clip to range [0, num_bins-1]
+        df[positional_encodings] = df[positional_encodings].clip(0, num_bins-1)
+        res.append(df)
+    return res
+    
 def get_augmentations(ds, aug_names):
     """get augmentations for the dataset of shape (n_samples, n_features, n_bins)"""
     if 'mirror' in aug_names:
@@ -632,3 +648,4 @@ def get_context_mask(dss, logger=None):
         masks.append(not_nan_mask)
         logger.info(f"Number of samples after filtering: {np.sum(not_nan_mask)}")
     return masks
+
