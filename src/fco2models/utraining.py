@@ -338,7 +338,7 @@ def add_xco2(df, xco2_mbl):
 
     return df 
 import xarray as xr
-def prep_df(dfs, logger=None, bound=False, index=None, normalize=False):
+def prep_df(dfs, logger=None, bound=False, index=None, with_target=True):
     """prepare dataframe for training
         - the idea is to use it for "segment independent" feature extraction (which is easier to do in a dataframe)
         - this is a bit of a hack, but it works for now
@@ -383,8 +383,9 @@ def prep_df(dfs, logger=None, bound=False, index=None, normalize=False):
             xco2_mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
             df = add_xco2(df, xco2_mbl)
         
-        logger.info("removing xco2 levels from fco2rec_uatm")
-        df['fco2rec_uatm'] = df['fco2rec_uatm'] - df['xco2']
+        if with_target:
+            logger.info("removing xco2 levels from fco2rec_uatm")
+            df['fco2rec_uatm'] = df['fco2rec_uatm'] - df['xco2']
     
         if bound:
             logger.info("replacing outliers with Nans, fco2rec_uatm > 400")
