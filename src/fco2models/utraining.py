@@ -46,6 +46,8 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
     val_losses = []
     for epoch in range(old_epoch, num_epochs):
         model.train()
+        if class_embedder is not None:
+            class_embedder.train()
         epoch_loss = 0.0
         progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")
         # noise = torch.randn((batch_size,1,64)).to(device)
@@ -93,6 +95,8 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
 
         # print validation loss
         model.eval()
+        if class_embedder is not None:
+            class_embedder.eval()
         t_tot = noise_scheduler.config.num_train_timesteps
         val_losses_t = []
         for t in range(0, t_tot, t_tot//10):

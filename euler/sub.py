@@ -126,8 +126,19 @@ print(f"Number of trainable parameters: {count_trainable_parameters(model)}")
 #     }
 # model = MLP(**model_params, num_timesteps=timesteps)
 
+class_embedder_params = {
+    "num_condition_dimensions": len(positional_encoding),
+    "output_dim": 16*4,
+    "num_classes_per_dimension": [100]*len(positional_encoding)
+    }
+class_embedder = ClassEmbedding(**class_embedder_params)
+lr_embedding = 1e-3
+class_embedder.to('cuda')
 model.to('cuda')
-optimizer = optim.AdamW(model.parameters(), lr=lr)
+optimizer = optim.AdamW(
+    [{'params': model.parameters(), 'lr': lr},
+     {'params': class_embedder.parameters(), 'lr': lr_embedding}
+     ])
 
 
 train_dataset = TensorDataset(torch.tensor(train_ds))
@@ -178,10 +189,6 @@ with open(save_dir +'hyperparameters.json', 'w') as f:
     param_dict = json.dumps(param_dict, indent=4)
     f.write(param_dict)
 
-class_embedder = ClassEmbedding(num_condition_dimensions=len(positional_encoding), 
-                                output_dim=16*4, 
-                                num_classes_per_dimension=[100]*len(positional_encoding)
-                                )
 model, train_losses, val_losses = train_diffusion(model,
                                                   num_epochs=num_epochs,
                                                   old_epoch=epoch,
