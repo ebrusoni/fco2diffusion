@@ -162,7 +162,7 @@ def full_denoise(model, noise_scheduler, context_loader, jump=None, pos_encoding
     context_loader = tqdm(context_loader, desc=f"Inference")
     for context_batch in context_loader:
         context = context_batch.to(device)
-        context = context[:, 1:pos_encodings_start, :]
+        context = context[:, :pos_encodings_start, :]
         pos_encodings = context_batch[:, pos_encodings_start:, :]
         # context = context.unsqueeze(0)
         
