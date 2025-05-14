@@ -380,7 +380,7 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True):
         
         # add xco2 data if not present
         if 'xco2' not in df.columns:
-            xco2_mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
+            xco2_mbl = xr.open_dataarray('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/xco2mbl-timeP7D_1D-lat25km.nc')
             df = add_xco2(df, xco2_mbl)
         
         if with_target:
