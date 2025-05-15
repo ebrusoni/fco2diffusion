@@ -17,7 +17,7 @@ from diffusers import DDPMScheduler, UNet1DModel
 from fco2models.utraining import train_diffusion, load_checkpoint, prepare_segment_ds, normalize_dss, prep_df, save_losses_and_png_diffusion, get_stats, quantize_positional_encodings 
 from torch.utils.data import TensorDataset
 import json
-from fco2models.models import MLP, UNet2DModelWrapper, ClassEmbedding
+from fco2models.models import MLP, UNet2DModelWrapper, ClassEmbedding, UNet2DWithClassEmbedding
 
 # fix random seed for reproducibility
 np.random.seed(0)
@@ -94,7 +94,7 @@ print(f"val_ds shape: {val_ds.shape}")
 # logging.info("Using UNet1DModel")
 
 # model = UNet1DModel(**model_params)
-num_epochs = 120
+num_epochs = 100
 timesteps = 1000
 
 layers_per_block = 2
@@ -112,8 +112,13 @@ model_params = {
     "class_embed_type": "identity",
     #"num_class_embeds": None, 
 }
+class_embedder_params = {
+    "num_condition_dimensions": len(positional_encoding),
+    "output_dim": 16*4,
+    "num_classes_per_dimension": [100]*len(positional_encoding)
+    }
 
-model = UNet2DModelWrapper(**model_params)
+model = UNet2DWithClassEmbedding(model_params, class_embedder_params, position_feature_start=len(predictors)+1)
 def count_trainable_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Number of trainable parameters: {count_trainable_parameters(model)}")
@@ -126,19 +131,8 @@ print(f"Number of trainable parameters: {count_trainable_parameters(model)}")
 #     }
 # model = MLP(**model_params, num_timesteps=timesteps)
 
-class_embedder_params = {
-    "num_condition_dimensions": len(positional_encoding),
-    "output_dim": 16*4,
-    "num_classes_per_dimension": [100]*len(positional_encoding)
-    }
-class_embedder = ClassEmbedding(**class_embedder_params)
-lr_embedding = 1e-3
-class_embedder.to('cuda')
 model.to('cuda')
-optimizer = optim.AdamW(
-    [{'params': model.parameters(), 'lr': lr},
-     {'params': class_embedder.parameters(), 'lr': lr_embedding}
-     ])
+optimizer = optim.AdamW(model.parameters(), lr=lr)
 
 
 train_dataset = TensorDataset(torch.tensor(train_ds))
@@ -198,8 +192,8 @@ model, train_losses, val_losses = train_diffusion(model,
                                                   train_dataloader=train_dataloader,
                                                   val_dataloader=val_dataloader,
                                                   save_model_path=save_dir,
-                                                  pos_encodings_start=len(predictors) + 1,
-                                                  class_embedder=class_embedder,
+                                                  #pos_encodings_start=len(predictors) + 1,
+                                                  #class_embedder=class_embedder,
                                                   )
 
     
