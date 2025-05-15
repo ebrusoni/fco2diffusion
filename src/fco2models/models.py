@@ -192,17 +192,20 @@ class UNet2DWithClassEmbedding(UNet2DModel):
 
     def forward(self, x, time, **kwargs):
         mask = x[:, -1:, :] # last channel is always the mask
-        position_features = x[:, self.ix:-1, :].int()
+        position_features = x[:, self.ix:-1, :]
         unet_features = torch.cat([x[:, :self.ix, :], mask], dim=1)
         # Get the class labels from the input tensor
-        class_labels = self.my_class_embedding(position_features)
-        channels = 16#int(2**next_log)
-        temp = torch.zeros((unet_features.shape[0], 1, channels, unet_features.shape[2]), device=unet_features.device)
-        temp[:, 0, :x.shape[1], :] = x
+        class_labels = self.my_class_embedding(position_features.int())
+        
+        batch_size, channels, bins = x.shape
+        height = 16 # must be power of 2
+        temp = torch.zeros((batch_size, 1, height, bins), device=unet_features.device)
+        temp[:, 0, :channels, :] = x
         x = temp
+        
         # Pass through the model
         pred = super().forward(x, time, **kwargs, class_labels=class_labels)[0]
-        return (pred.squeeze(1)[:, 0:1, :],)
+        return (pred[:, 0, 0:1, :],)
 
         
 
