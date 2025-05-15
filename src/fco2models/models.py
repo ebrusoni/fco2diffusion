@@ -165,7 +165,7 @@ class ClassEmbedding(nn.Module):
         if len(class_labels.shape) == 1:
             class_labels = class_labels.unsqueeze(1)
 
-        # just take first entry of each segment for emebedding
+        # just take first entry of each segment for embedding
         class_labels = class_labels[:, :, 0]
         
         # Get the embeddings for each condition dimension
@@ -174,6 +174,37 @@ class ClassEmbedding(nn.Module):
             embeddings_sum += self.embedding[i](class_labels[:, i])
         
         return embeddings_sum
+    
+class UNet2DWithClassEmbedding(UNet2DModel):
+    def __init__(self, unet_config, class_embedding_config, position_feature_start):
+        """
+        UNet2D model with class embedding.
+        
+        Args:
+            unet_config (dict): Configuration for the UNet2D model.
+            class_embedding_config (dict): Configuration for the class embedding layer.
+        """
+        super(UNet2DWithClassEmbedding, self).__init__(**unet_config)
+        
+        # Initialize the class embedding layer
+        self.my_class_embedding = ClassEmbedding(**class_embedding_config)
+        self.ix = position_feature_start
+
+    def forward(self, x, time, **kwargs):
+        mask = x[:, -1:, :] # last channel is always the mask
+        position_features = x[:, self.ix:-1, :].int()
+        unet_features = torch.cat([x[:, :self.ix, :], mask], dim=1)
+        # Get the class labels from the input tensor
+        class_labels = self.my_class_embedding(position_features)
+        channels = 16#int(2**next_log)
+        temp = torch.zeros((unet_features.shape[0], 1, channels, unet_features.shape[2]), device=unet_features.device)
+        temp[:, 0, :x.shape[1], :] = x
+        x = temp
+        # Pass through the model
+        pred = super().forward(x, time, **kwargs, class_labels=class_labels)[0]
+        return (pred.squeeze(1)[:, 0:1, :],)
+
+        
 
     
 
