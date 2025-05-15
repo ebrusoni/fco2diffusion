@@ -8,8 +8,11 @@ from functools import lru_cache
 
 def is_reachable_url(url: str) -> bool:
     try:
-        response = requests.head(url)
+        response = requests.head(url, timeout=5)
         return response.status_code >= 200 and response.status_code < 400
+    except requests.Timeout:
+        print(f"Timeout occurred while checking URL: {url}. Proceed anyway maybe dataset already downloaded.")
+        return True
     except requests.RequestException:
         return False
     
