@@ -72,8 +72,8 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
             noisy_input = noisy_input.to(device).float()
             
             # Get the model prediction
-            class_labels = None if pos_encodings_start is None else class_embedder(pos_encodings.int())
-            noise_pred = model(noisy_input, timesteps, return_dict=False, class_labels=class_labels)[0]
+            #class_labels = None if pos_encodings_start is None else class_embedder(pos_encodings.int())
+            noise_pred = model(noisy_input, timesteps, return_dict=False)[0]
 
             # Calculate the loss
             optimizer.zero_grad()
@@ -104,7 +104,7 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
             for batch in val_dataloader:
                 timesteps = torch.full((batch[0].shape[0],), t, device=device, dtype=torch.long)
                 noisy_input, noise, nan_mask, timesteps, class_labels = prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, class_embedder, device)
-                noise_pred = model(noisy_input, timesteps, return_dict=False, class_labels=class_labels)[0]
+                noise_pred = model(noisy_input, timesteps, return_dict=False)[0]
                 loss = loss_fn(noise_pred[~nan_mask], noise[~nan_mask])
                 val_loss += loss.item()
             val_losses_t.append(val_loss / len(val_dataloader))
@@ -380,7 +380,7 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True):
         
         # add xco2 data if not present
         if 'xco2' not in df.columns:
-            xco2_mbl = xr.open_dataarray('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/xco2mbl-timeP7D_1D-lat25km.nc')
+            xco2_mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
             df = add_xco2(df, xco2_mbl)
         
         if with_target:
