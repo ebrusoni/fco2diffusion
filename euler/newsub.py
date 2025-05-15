@@ -17,7 +17,7 @@ from diffusers import DDPMScheduler, UNet1DModel
 
 from fco2models.utraining import prep_df, normalize_dss, load_checkpoint, train_diffusion, save_losses_and_png_diffusion
 from fco2models.utraining import get_segments_random, get_segments, make_monthly_split, get_stats_df, get_context_mask
-from fco2models.models import MLP, UNet2DModelWrapper, ConvNet, UNet2DModelWrapper
+from fco2models.models import MLP, UNet2DModelWrapper, ConvNet, UNet2DModelWrapper, ClassEmbedding
 from fco2models.umeanest import train_mean_estimator
 
 # fix random seed for reproducibility
@@ -79,15 +79,6 @@ print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds 
 mode = 'mean_std'
 train_ds, val_ds, test_ds = normalize_dss([train_ds, val_ds, test_ds], train_stats, mode, ignore=[], logger=logging)
 
-
-def add_fco2_mask(ds):
-    not_nan_mask = (~np.isnan(ds[:, 0:1, :])).astype(np.float32)
-    return np.concatenate([ds, not_nan_mask], axis=1)
-
-train_ds = add_fco2_mask(train_ds)
-val_ds = add_fco2_mask(val_ds)
-test_ds = add_fco2_mask(test_ds)
-
 # count nans in first column of the dataset
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
 logging.info(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
@@ -131,8 +122,8 @@ model_params = {
     "down_block_types": down_block_types,
     "up_block_types": up_block_types,
     "norm_num_groups": 16,
-    "class_embed_type": "timestep",
-    "num_class_embeds": None, 
+    # "class_embed_type": "Identity",
+    # "num_class_embeds": None, 
 }
 
 model = UNet2DModelWrapper(**model_params)
@@ -199,7 +190,10 @@ with open(save_dir +'hyperparameters.json', 'w') as f:
     param_dict = json.dumps(param_dict, indent=4)
     f.write(param_dict)
 
-
+# class_embedder = ClassEmbedding(dim_classes=len(positional_encoding), 
+#                                 output_dim=16*4, 
+#                                 num_classes=[100]*len(positional_encoding)
+#                                 )
 model, train_losses, val_losses = train_diffusion(model,
                                                   num_epochs=num_epochs - epoch, 
                                                   optimizer=optimizer, 
@@ -208,7 +202,8 @@ model, train_losses, val_losses = train_diffusion(model,
                                                   train_dataloader=train_dataloader,
                                                   val_dataloader=val_dataloader,
                                                   save_model_path=save_dir,
-                                                  pos_encodings_start=len(predictors) + 1,
+                                                  #pos_encodings_start=len(predictors) + 1,
+                                                  #class_embedder=class_embedder,
                                                   )
 
     
