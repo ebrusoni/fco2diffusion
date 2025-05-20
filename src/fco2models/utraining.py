@@ -338,7 +338,7 @@ def add_xco2(df, xco2_mbl):
 
     return df 
 import xarray as xr
-def prep_df(dfs, logger=None, bound=False, index=None, with_target=True):
+def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_log=True):
     """prepare dataframe for training
         - the idea is to use it for "segment independent" feature extraction (which is easier to do in a dataframe)
         - this is a bit of a hack, but it works for now
@@ -354,11 +354,12 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True):
         # add day of year feature if not present
         if 'day_of_year' not in df.columns:
             df['day_of_year'] = df['time_1d'].dt.dayofyear
-    
-        logger.info("salinity stacking")
+        if with_log:
+            logger.info("salinity stacking")
         df['sss_cci'] = df['sss_cci'].fillna(df['salt_soda'])
-    
-        logger.info("adding positional and temporal encodings")
+
+        if with_log:
+            logger.info("adding positional and temporal encodings")
         df['sin_day_of_year'] = np.sin(df['day_of_year']* np.pi / 365)
         df['cos_day_of_year'] = np.cos(df['day_of_year']* np.pi / 365)
         # normalize lons to range [-180, 180] from [0, 360]
@@ -374,7 +375,8 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True):
     
         #logger.info("clip values of fco2 between 0 and 400")
         #df['fco2rec_uatm'] = df['fco2rec_uatm'].clip(lower=None, upper=400)
-        logger.info("add climatology data")
+        if with_log:
+            logger.info("add climatology data")
         co2_clim = xr.open_zarr('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/co2_clim/prior_dfco2-lgbm-ens_avg-t46y720x1440.zarr/')
         df = add_clims(df, co2_clim)
         
@@ -389,7 +391,8 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True):
             df['fco2rec_uatm'] = df['fco2rec_uatm'] - df['xco2']
     
         if bound:
-            logger.info("replacing outliers with Nans, fco2rec_uatm > 400")
+            if with_log:
+                logger.info("replacing outliers with Nans, fco2rec_uatm > 400")
             # fco2rec_uatm_95th = df['fco2rec_uatm'].quantile(0.95)
             # fco2rec_uatm_5th = df['fco2rec_uatm'].quantile(0.05)
             # df['fco2rec_uatm'] = df['fco2rec_uatm'].clip(lower=fco2rec_uatm_5th, upper=fco2rec_uatm_95th)
