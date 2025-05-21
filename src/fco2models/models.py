@@ -207,8 +207,29 @@ class UNet2DWithClassEmbedding(UNet2DModel):
         pred = super().forward(x, time, **kwargs, class_labels=class_labels)[0]
         return (pred[:, 0, 0:1, :],)
 
+import torch.nn.functional as F
+class Unet2DGuidanceFreeModel(UNet2DModel):
+    def __init__(self, unet_config, gamma=0.1):
+        """
+        UNet2D model with class embedding.
         
-
+        Args:
+            unet_config (dict): Configuration for the UNet2D model.
+            class_embedding_config (dict): Configuration for the class embedding layer.
+        """
+        super(Unet2DGuidanceFreeModel, self).__init__(**unet_config)
+        self.gamma = gamma
     
+    def forward(self, x, time, **kwargs):
+        channels = x.shape[1]
+        height = 16 # must be power of 2
+        x = F.pad(x, (0, 0, 0, height - channels))
+        uncond = torch.rand(x.shape[0], device=x.device) < self.gamma
+        if uncond:
+            x_uncond = x.clone()
+            x_uncond[:, :, 1:, :] = 0
+            pred = super().forward(x_uncond, time, **kwargs)[0]
+        else:
+            pred = super().forward(x, time, **kwargs)[0]
 
-        
+        return (pred[:, 0, 0:1, :],)
