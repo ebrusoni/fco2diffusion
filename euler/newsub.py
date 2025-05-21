@@ -1,5 +1,5 @@
 from utils import add_src_and_logger
-save_dir = f'../models/baseline/'
+save_dir = f'../models/newds/'
 is_renkolab = False
 DATA_PATH, logging = add_src_and_logger(is_renkolab, save_dir)
 
@@ -27,14 +27,13 @@ torch.cuda.manual_seed(0)
 
 lr = 4e-5
 batch_size = 128
-num_epochs = 40
 
 
 logging.info("------------ Starting training ------------------")
 logging.info("Training with larger random dataset")
 
 df = pd.read_parquet(DATA_PATH + "SOCAT_1982_2021_grouped_colloc_augm_bin.pq")
-df = prep_df(df, logger=logging)[0]
+df = prep_df(df, bound=True, logger=logging)[0]
 print(df.fco2rec_uatm.max(), df.fco2rec_uatm.min())
 
 mask_train, mask_val, mask_test = make_monthly_split(df)
@@ -76,7 +75,7 @@ test_ds = test_ds[test_context_mask]
 print(f"removing context nans")
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
 
-mode = 'mean_std'
+mode = 'min_max'
 train_ds, val_ds, test_ds = normalize_dss([train_ds, val_ds, test_ds], train_stats, mode, ignore=[], logger=logging)
 
 # count nans in first column of the dataset
@@ -148,10 +147,10 @@ train_dataloader = data.DataLoader(train_dataset, batch_size=batch_size, shuffle
 val_dataloader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
 lr_params = {
-    "num_warmup_steps": 0.05 * num_epochs * len(train_dataloader), 
-    "num_training_steps": num_epochs * len(train_dataloader)
+    # "num_warmup_steps": 0.05 * num_epochs * len(train_dataloader), 
+    # "num_training_steps": num_epochs * len(train_dataloader)
     }
-lr_scheduler = get_cosine_schedule_with_warmup(optimizer, **lr_params)
+lr_scheduler = get_constant_schedule(optimizer, **lr_params)
 
 checkpoint_path = None
 if checkpoint_path is not None:
@@ -195,7 +194,8 @@ with open(save_dir +'hyperparameters.json', 'w') as f:
 #                                 num_classes=[100]*len(positional_encoding)
 #                                 )
 model, train_losses, val_losses = train_diffusion(model,
-                                                  num_epochs=num_epochs - epoch, 
+                                                  num_epochs=num_epochs,
+                                                  old_epoch=epoch, 
                                                   optimizer=optimizer, 
                                                   lr_scheduler=lr_scheduler, 
                                                   noise_scheduler=noise_scheduler, 
