@@ -17,7 +17,7 @@ from diffusers import DDPMScheduler, UNet1DModel
 
 from fco2models.utraining import prep_df, normalize_dss, load_checkpoint, train_diffusion, save_losses_and_png_diffusion
 from fco2models.utraining import get_segments_random, get_segments, make_monthly_split, get_stats_df, get_context_mask
-from fco2models.models import MLP, UNet2DModelWrapper, ConvNet, UNet2DModelWrapper, ClassEmbedding
+from fco2models.models import MLP, UNet2DModelWrapper, ConvNet, UNet2DModelWrapper, ClassEmbedding, Unet2DGuidanceFreeModel
 from fco2models.umeanest import train_mean_estimator
 
 # fix random seed for reproducibility
@@ -126,7 +126,7 @@ model_params = {
     # "num_class_embeds": None, 
 }
 
-model = UNet2DModelWrapper(**model_params)
+model = Unet2DGuidanceFreeModel(model_params)
 def count_trainable_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Number of trainable parameters: {count_trainable_parameters(model)}")
