@@ -224,6 +224,12 @@ class Unet2DGuidanceFreeModel(UNet2DModel):
         channels = x.shape[1]
         height = 16 # must be power of 2
         x = F.pad(x, (0, 0, 0, height - channels))
+
+        if not self.training:
+            pred = super().forward(x, time, **kwargs)[0]
+            return (pred[:, 0, 0:1, :],)
+        
+        # Apply guidance-free sampling
         uncond = torch.rand(x.shape[0], device=x.device) < self.gamma
         if uncond:
             x_uncond = x.clone()
