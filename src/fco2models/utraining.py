@@ -382,9 +382,19 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_lo
         
         # add xco2 data if not present
         if 'xco2' not in df.columns:
-            # xco2_mbl = xr.open_dataarray('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/xco2mbl-timeP7D_1D-lat25km.nc')
+            if with_log:
+                logger.info("adding xco2 data")
+            # xco2_mbl = xr.open_dataarray('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/xco2mbl-timeP7D_1D-lat25km.nc', engine="scipy")
             xco2_mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
             df = add_xco2(df, xco2_mbl)
+        
+        if 'seamask' not in df.columns:
+            if with_log:
+                logger.info("adding seamask data")
+            # seamask = xr.open_dataset('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/seamask/seamask_1d.nc')
+            masks = xr.open_dataset("../data/masks/RECCAP2_masks.nc")
+            selection = df[['lat', 'lon']].to_xarray()
+            df['seamask'] = masks.seamask.sel(selection, method='nearest')
         
         if with_target:
             logger.info("removing xco2 levels from fco2rec_uatm")
@@ -567,6 +577,22 @@ def save_losses_and_png_diffusion(train_losses, val_losses, save_dir, t_tot):
     plt.show()
 
 # STUFF FOR NEW DATASET
+def replace_with_cruise_data(segments, cruise_data, prob=0.3):
+    # segments has shape (n_samples, n_features, n_bins)
+    # cruise_data has shape (n_samples, n_features, n_bins)
+    # the first column of cruise_data is temperature, then salinity, then pressure
+    # these correspon to the 2nd, 3rd and 4th columns of segments
+
+    # replace with probability prob
+    n_segments = segments.shape[0]
+    mask = np.random.rand(n_segments) < prob
+
+    segments[mask, 1, :] = cruise_data[mask, 0, :]
+    segments[mask, 2, :] = cruise_data[mask, 1, :]
+    segments[mask, 3, :] = cruise_data[mask, 2, :]
+
+    return segments
+
 def get_segments_random(df, cols, num_windows=64, n=3):
     """extraxt arrays of size num_windows from the dataframe df randomly"""
 
