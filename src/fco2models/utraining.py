@@ -577,22 +577,34 @@ def save_losses_and_png_diffusion(train_losses, val_losses, save_dir, t_tot):
     plt.show()
 
 # STUFF FOR NEW DATASET
-def replace_with_cruise_data(segments, cruise_data, prob=0.3):
+def replace_with_cruise_data(segments, cruise_data, prob=0.3, logger=None):
     # segments has shape (n_samples, n_features, n_bins)
     # cruise_data has shape (n_samples, n_features, n_bins)
-    # the first column of cruise_data is temperature, then salinity, then pressure
-    # these correspon to the 2nd, 3rd and 4th columns of segments
+    # the first column of cruise_data is temperature, then salinity
+    # these correspond to the 2nd and 3rd
+    # if the cruise_data is not available, we keep the remote sensing data
+    logger = make_logger(logger)
+    logger.info(f"Replacing segments with cruise data with probability {prob}")
 
     # replace with probability prob
     n_segments = segments.shape[0]
     mask = np.random.rand(n_segments) < prob
 
-    segments[mask, 1, :] = cruise_data[mask, 0, :]
-    segments[mask, 2, :] = cruise_data[mask, 1, :]
-    segments[mask, 3, :] = cruise_data[mask, 2, :]
+    nan_mask_temp = ~np.isnan(cruise_data[mask, 0, :], axis=1)
+    segments[mask, 1, nan_mask_temp] = cruise_data[mask, 0, nan_mask_temp]
+    nan_mask_sal = ~np.isnan(cruise_data[mask, 1, :], axis=1)
+    segments[mask, 2, nan_mask_sal] = cruise_data[mask, 1, nan_mask_sal]
 
     return segments
 
+def perturb_fco2(segments, logger=None):
+    """perturb fco2 values in the segments with noise +-5 uatm"""
+    logger = make_logger(logger)
+    logger.info("Perturbing fco2 values with noise +-5 uatm")
+    noise = np.random.uniform(-5, 5, size=segments[:, 0, :].shape)
+    segments[:, 0, :] += noise
+    return segments
+    
 def get_segments_random(df, cols, num_windows=64, n=3):
     """extraxt arrays of size num_windows from the dataframe df randomly"""
 
