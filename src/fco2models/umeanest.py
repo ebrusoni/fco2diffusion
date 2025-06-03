@@ -356,9 +356,10 @@ class  MLPModel(nn.Module):
 
 from torch.utils.data import DataLoader
 from torch.utils.data import TensorDataset
-def get_loader_point_ds(df, stats, mode, batch_size=2048, shuffle=False):
+def get_loader_point_ds(df, stats, mode, batch_size=2048, shuffle=False, dropna=True):
     """ small helper function to prepare the dataset for pointwise mlp model"""
-    ds = df.dropna()
+    
+    ds = df.dropna() if dropna else df
     ds = ds.values[:, :, np.newaxis]
     ds = normalize_dss([ds], stats, mode)[0]
     ds = torch.tensor(ds).float()
