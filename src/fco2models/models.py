@@ -68,24 +68,15 @@ class MLP(nn.Module):
 # just a wrapper for the UNet2DModel forward to adjust the input shape
 class UNet2DModelWrapper(UNet2DModel):
     
-    def forward(self, x, time, **kwargs):
-        # print(x.shape)
-        # current shape (batch_size, channels, bins)
-        # zero array with next greatest power of 2 as channels
-        # channels = 16
-        # next_log = torch.ceil(torch.log2(torch.tensor(x.shape[1]))).item()
-        #channels = 16#int(2**next_log)
-        # channels = x.shape[1]
-        # height = 16 # must be power of 2
-        #x = F.pad(x, (0, 0, 0, height - channels)).unsqueeze(1)  # pad and add a channel dimension
-        # temp = torch.zeros((x.shape[0], 1, channels, x.shape[2]), device=x.device)
-        # temp[:, 0, :x.shape[1], :] = x
-        # x = temp
-        # Pass through the model
-        pred = super().forward(x.unsqueeze(1), time, **kwargs)[0]
-        # print(pred.squeeze(1)[:, 0:1, :].shape)
-        #return (pred.squeeze(1)[:, 0:1, :],)
-        return (pred[:, 0, 0:1, :],)  # return only the first channel (target)
+    def forward(self, x, t, **kw):
+        fixed_h = 16
+        h = x.shape[1]
+        pad = fixed_h - h
+        if pad < 0:
+            raise ValueError(f"More channels ({h}) than fixed_h ({fixed_h})")
+        x = F.pad(x, (0, 0, 0, pad)).unsqueeze(1)     # (B, C, bins) → (B, 1, fixed_h, bins)
+        pred = super().forward(x, t, **kw)[0]
+        return (pred[:, 0, :1, :],)
     
 
 class ConvNet(nn.Module):
