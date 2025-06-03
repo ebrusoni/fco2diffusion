@@ -74,14 +74,18 @@ class UNet2DModelWrapper(UNet2DModel):
         # zero array with next greatest power of 2 as channels
         # channels = 16
         # next_log = torch.ceil(torch.log2(torch.tensor(x.shape[1]))).item()
-        channels = 16#int(2**next_log)
-        temp = torch.zeros((x.shape[0], 1, channels, x.shape[2]), device=x.device)
-        temp[:, 0, :x.shape[1], :] = x
-        x = temp
+        #channels = 16#int(2**next_log)
+        # channels = x.shape[1]
+        # height = 16 # must be power of 2
+        #x = F.pad(x, (0, 0, 0, height - channels)).unsqueeze(1)  # pad and add a channel dimension
+        # temp = torch.zeros((x.shape[0], 1, channels, x.shape[2]), device=x.device)
+        # temp[:, 0, :x.shape[1], :] = x
+        # x = temp
         # Pass through the model
-        pred = super().forward(x, time, **kwargs)[0]
+        pred = super().forward(x.unsqueeze(1), time, **kwargs)[0]
         # print(pred.squeeze(1)[:, 0:1, :].shape)
-        return (pred.squeeze(1)[:, 0:1, :],)
+        #return (pred.squeeze(1)[:, 0:1, :],)
+        return (pred[:, 0, 0:1, :],)  # return only the first channel (target)
     
 
 class ConvNet(nn.Module):
@@ -208,8 +212,8 @@ class UNet2DWithClassEmbedding(UNet2DModel):
         return (pred[:, 0, 0:1, :],)
 
 import torch.nn.functional as F
-class Unet2DGuidanceFreeModel(UNet2DModel):
-    def __init__(self, unet_config, gamma=0.1):
+class Unet2DClassifierFreeModel(UNet2DModel):
+    def __init__(self, unet_config, keep_channels, num_channels, gamma=7.5):
         """
         UNet2D model with class embedding.
         
@@ -217,25 +221,20 @@ class Unet2DGuidanceFreeModel(UNet2DModel):
             unet_config (dict): Configuration for the UNet2D model.
             class_embedding_config (dict): Configuration for the class embedding layer.
         """
-        super(Unet2DGuidanceFreeModel, self).__init__(**unet_config)
+        super(Unet2DClassifierFreeModel, self).__init__(**unet_config)
         self.gamma = gamma
+        self.channel_mask = torch.full((num_channels,), True, dtype=torch.bool)
+        self.channel_mask[keep_channels] = False
+
     
     def forward(self, x, time, **kwargs):
         channels = x.shape[1]
         height = 16 # must be power of 2
         x = F.pad(x, (0, 0, 0, height - channels))
-
-        if not self.training:
-            pred = super().forward(x, time, **kwargs)[0]
-            return (pred[:, 0, 0:1, :],)
-        
-        # Apply guidance-free sampling
-        uncond = torch.rand(x.shape[0], device=x.device) < self.gamma
-        if uncond:
-            x_uncond = x.clone()
-            x_uncond[:, :, 1:, :] = 0
-            pred = super().forward(x_uncond, time, **kwargs)[0]
-        else:
-            pred = super().forward(x, time, **kwargs)[0]
-
+        x_uncond = x.copy()
+        x_uncond[:, self.channel_mask, :] = 0.0 # keep target, temperature, salinity, and mask, but set all other channels to 0
+        pred = super().forward(x, time, **kwargs)[0]
+        uncond_pred = super().forward(x_uncond, time, **kwargs)[0]
+        # classifier free prediction
+        pred = pred + self.gamma * (pred - uncond_pred)
         return (pred[:, 0, 0:1, :],)
