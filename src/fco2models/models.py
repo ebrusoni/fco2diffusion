@@ -216,16 +216,30 @@ class Unet2DClassifierFreeModel(UNet2DModel):
         self.gamma = gamma
         self.channel_mask = torch.full((num_channels,), True, dtype=torch.bool)
         self.channel_mask[keep_channels] = False
+        self.fixed_h = 16  # must be power of 2
 
     
     def forward(self, x, time, **kwargs):
-        channels = x.shape[1]
-        height = 16 # must be power of 2
-        x = F.pad(x, (0, 0, 0, height - channels))
-        x_uncond = x.copy()
+        h = x.shape[1]
+        pad = self.fixed_h - h
+        if pad < 0:
+            raise ValueError(f"More channels ({h}) than fixed_h ({self.fixed_h})")
+        x = F.pad(x, (0, 0, 0, pad))    # (B, C, bins) → (B, 1, fixed_h, bins)
+        
+        if self.training:
+            uncond = torch.rand(x.shape[0], device=x.device) < 0.5
+            x_uncond = x.clone()
+            x_uncond[uncond.nonzero(as_tuple=True)[0].unsqueeze(1), self.channel_mask.nonzero(as_tuple=True)[0], :] = 0
+            pred = super().forward(x_uncond.unsqueeze(1), time, **kwargs)[0]
+            return (pred[:, 0, 0:1, :],)
+            
+        x_uncond = x.clone()
         x_uncond[:, self.channel_mask, :] = 0.0 # keep target, temperature, salinity, and mask, but set all other channels to 0
-        pred = super().forward(x, time, **kwargs)[0]
-        uncond_pred = super().forward(x_uncond, time, **kwargs)[0]
+        pred = super().forward(x.unsqueeze(1), time, **kwargs)[0]
+        uncond_pred = super().forward(x_uncond.unsqueeze(1), time, **kwargs)[0]
         # classifier free prediction
-        pred = pred + self.gamma * (pred - uncond_pred)
+        pred = pred + self.w * (pred - uncond_pred)
         return (pred[:, 0, 0:1, :],)
+    
+    def set_w(self, new_w):
+        self.w = new_w
