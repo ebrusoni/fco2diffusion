@@ -1,7 +1,7 @@
 
 from utils import add_src_and_logger
 
-save_dir = f'../models/seamask_sota/'
+save_dir = f'../models/sota_ensemble/'
 DATA_PATH, logger = add_src_and_logger(False, save_dir)
 
 import pandas as pd 
@@ -225,19 +225,49 @@ with open(save_dir +'hyperparameters.json', 'w') as f:
     param_dict = json.dumps(param_dict, indent=4)
     f.write(param_dict)
 
+def train_pointwise_mlp_ensemble(model_params, num_models, lr_scheduler, **kwargs):
+    models = []
+    train_losses = []
+    val_losses = []
+    for i in range(num_models):
+        logging.info(f"Training model {i+1}/{num_models}")
+        model = MLPModel(**model_params)
+        optimizer = optim.Adam(model.parameters(), lr=lr)
+        model, train_loss, val_loss = train_pointwise_mlp(model,
+                                                          #num_epochs=num_epochs, 
+                                                          #old_epoch=0,
+                                                          optimizer=optimizer, 
+                                                          lr_scheduler=lr_scheduler,
+                                                          **kwargs)
+        models.append(model)
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        logging.info(f"Model {i+1}/{num_models} trained")
+    return models, train_losses, val_losses
+    
 
 
-
-model, train_losses, val_losses = train_pointwise_mlp(model,
-                                                       num_epochs=num_epochs, 
-                                                       old_epoch=epoch,
-                                                       optimizer=optimizer, 
-                                                       lr_scheduler=lr_scheduler,
-                                                       train_dataloader=train_dataloader,
-                                                       val_dataloader=val_dataloader,
-                                                       save_model_path=save_dir,
-                                                       rmse_const=train_stats['stds'][0],
-                                                       )
+# model, train_losses, val_losses = train_pointwise_mlp(model,
+#                                                        num_epochs=num_epochs, 
+#                                                        old_epoch=epoch,
+#                                                        optimizer=optimizer, 
+#                                                        lr_scheduler=lr_scheduler,
+#                                                        train_dataloader=train_dataloader,
+#                                                        val_dataloader=val_dataloader,
+#                                                        save_model_path=save_dir,
+#                                                        rmse_const=train_stats['stds'][0],
+#                                                        )
+model, train_losses, val_losses = train_pointwise_mlp_ensemble(model_params,
+                                                               num_models=5,
+                                                               num_epochs=num_epochs, 
+                                                               old_epoch=epoch,
+                                                               #optimizer=optimizer, 
+                                                               lr_scheduler=lr_scheduler,
+                                                               train_dataloader=train_dataloader,
+                                                               val_dataloader=val_dataloader,
+                                                               save_model_path=save_dir,
+                                                               rmse_const=train_stats['stds'][0],
+                                                               )
 
 
 train_losses_old += train_losses
