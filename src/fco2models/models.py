@@ -1,6 +1,64 @@
 import torch
 import torch.nn as nn
+from torch import vmap
+import copy
+from torch.func import stack_module_state, functional_call
 from diffusers import UNet1DModel, UNet2DModel
+
+class MLPNaiveEnsemble(nn.Module):
+    """
+    A naive ensemble whose .forward(x) returns logits with shape
+    [E, B, C] — **no reduction is performed**.
+    """
+    def __init__(self, ensemble_size: int, mlp_class, mlp_kwargs):
+        super().__init__()
+        self.E = ensemble_size
+
+        # create E real copies, then stack their states
+        models  = [mlp_class(**mlp_kwargs) for _ in range(ensemble_size)]
+        self.models = nn.ModuleList(models) 
+
+
+    def forward(self, x, t, **kwargs):                       
+        # Vectorise over the leading E dimension of params and buffers
+        return torch.stack([self.models[i](x, t, **kwargs)[0] for i in range(self.E)], axis=0)
+
+class MLPEnsemble(nn.Module):
+    """
+    A vmap-based ensemble whose .forward(x) returns logits with shape
+    [E, B, C] — **no reduction is performed**.
+    """
+    def __init__(self, ensemble_size: int, mlp_class, mlp_kwargs):
+        super().__init__()
+        self.E = ensemble_size
+
+        # a template network we will call "functionally" (lives on 'meta' device)
+        self.base = mlp_class(**mlp_kwargs).to('meta')
+        #self.add_module("_base", base)    # appears in the state_dict
+
+        # create E real copies, then stack their states
+        models  = [mlp_class(**mlp_kwargs) for _ in range(ensemble_size)]
+        params, buffers = stack_module_state(models)          # :contentReference[oaicite:0]{index=0}
+
+        # register parameters so standard optimisers can see them
+        self.params = nn.ParameterDict({k: nn.Parameter(v) for k, v in params.items()})
+        #self.buffers = nn.ModuleDict({k: nn.Parameter(v) for k, v in buffers.items()})
+        for n, b in buffers.items():
+            self.register_buffer(n, b)
+
+    # ------- Functional forward for a single member --------------------------------
+    def _fmodel(self, param_single, buffer_single, x, t):
+        return functional_call(self.base, (param_single, buffer_single), (x,t))
+
+    # ------- Public forward ---------------------------------------------------------
+    def forward(self, x, t, **kwargs):                       # x: [B, …]
+        # Pick up current buffers
+        #buffers = {k: getattr(self, k) for k in self._buffers}
+        x = x.expand(self.E, *x.shape)  # [E, B, ...]  # replicate x for each ensemble member
+        x = t.expand(self.E, *t.shape)  # [E, B, ...]  # replicate t for each ensemble member
+        # Vectorise over the leading E dimension of params and buffers
+        return vmap(self._fmodel)(self.params, self.buffers, x, t)
+        # result: [E, B, C]
 
 class MLP(nn.Module):
     def __init__(self, input_dim=64, output_dim=10, hidden_dims=[64], activation=nn.ReLU, dropout_prob=0.0, num_timesteps=500):
@@ -204,7 +262,7 @@ class UNet2DWithClassEmbedding(UNet2DModel):
 
 import torch.nn.functional as F
 class Unet2DClassifierFreeModel(UNet2DModel):
-    def __init__(self, unet_config, keep_channels, w=2.0):
+    def __init__(self, unet_config, keep_channels, num_channels, w=2.0):
         """
         UNet2D model with class embedding.
         
