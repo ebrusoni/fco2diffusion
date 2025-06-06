@@ -1,7 +1,7 @@
 
 from utils import add_src_and_logger
 
-save_dir = f'../models/sota/'
+save_dir = f'../models/seamask_sota/'
 DATA_PATH, logger = add_src_and_logger(False, save_dir)
 
 import pandas as pd 
@@ -50,23 +50,46 @@ def add_clims(df, co2_clim):
     df['co2_clim8d'] = co2_clim.dfco2_clim_smooth.sel(**selector, method='nearest')
     return df
 
+def add_seamask(df, masks):
+    selector = df[['lat_005', 'lon_005']].to_xarray()
+    selector = selector.rename({'lat_005': 'lat', 'lon_005': 'lon'})
+    df['seamask'] = masks.seamask.sel(**selector, method='nearest')
+    return df
+
 dfs = []
 xco2_mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
 co2_clim = xr.open_zarr('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/co2_clim/prior_dfco2-lgbm-ens_avg-t46y720x1440.zarr/')
+masks = xr.open_dataset("../data/masks/RECCAP2_masks.nc")
 for year in range(1982, 2022):
-    df = pd.read_parquet(f'../data/SOCATv2024-1d_005deg-colloc-r20250224/SOCATv2024_1d_005deg_collocated_{year}-r20250224.pq')
+    print(f"Processing year: {year}")
+    df = pd.read_parquet(f'../data/SOCATv2024-1d_005deg-colloc-r20250224/SOCATv2024_1d_005deg_collocated_{year}-r20250224.pq', engine='pyarrow')
+    print(f"Loaded data for year {year}, shape: {df.shape}")
     #add day_of_year column
     df.reset_index(inplace=True)
     df['day_of_year'] = df['time_1d'].dt.dayofyear
     df['year'] = year
-    df = add_xco2(df, xco2_mbl)
-    df = add_clims(df, co2_clim)
+    # df = add_xco2(df, xco2_mbl)
+    # print(f"Added xco2, shape: {df.shape}")
+    # df = add_clims(df, co2_clim)
+    # print(f"Added co2_clim, shape: {df.shape}")
+    # df = add_seamask(df, masks)
+    # print(f"Added seamask, shape: {df.shape}")
     dfs.append(df)
 
 df = pd.concat(dfs, ignore_index=True)
+df = add_clims(df, co2_clim)
+print("Added co2_clim, shape:", df.shape)
+df = add_xco2(df, xco2_mbl)
+print("Added xco2, shape:", df.shape)
+df = add_seamask(df, masks)
+print("Added seamask, shape:", df.shape)
+print(f"Concatenated data, shape: {df.shape}")
 
 # remove entries with high ice concentration
+logger.info(f"Removed ice concentration > 0.8")
 df = df[df.ice_cci < 0.8]
+
+
 # renane lon and lat columns
 df = df.rename(columns={'lon_005':'lon', 'lat_005': 'lat'})
 df = prep_df(df, bound=True, logger=logging)[0]
@@ -77,15 +100,18 @@ mask_test = np.isin(months, test_months)
 
 df_train = df[~mask_test]
 df_val = df[mask_test]
+logger.info(f"Removed all points not in seamask in validation set")
+df_val = df_val[df_val.seamask == 1]
 
 # drop nan rows
 predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'ssh_sla', 
-              'mld_dens_soda', 'xco2', 'sin_day_of_year', 'cos_day_of_year',
-              'sin_lat', 'sin_lon_cos_lat', 'cos_lon_cos_lat', 'co2_clim8d'
-              ]
+              'mld_dens_soda', 'xco2', 'co2_clim8d', 'sin_day_of_year',
+              'cos_day_of_year', 'sin_lat', 'sin_lon_cos_lat', 'cos_lon_cos_lat']
 target = 'fco2rec_uatm'
 df_train = df_train[[target] + predictors].dropna()
 df_val = df_val[[target] + predictors].dropna()
+
+
 
 train_ds = df_train.values
 val_ds = df_val.values
