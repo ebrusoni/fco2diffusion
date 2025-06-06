@@ -204,7 +204,7 @@ class UNet2DWithClassEmbedding(UNet2DModel):
 
 import torch.nn.functional as F
 class Unet2DClassifierFreeModel(UNet2DModel):
-    def __init__(self, unet_config, keep_channels, num_channels, gamma=7.5):
+    def __init__(self, unet_config, keep_channels, w=2.0):
         """
         UNet2D model with class embedding.
         
@@ -213,11 +213,10 @@ class Unet2DClassifierFreeModel(UNet2DModel):
             class_embedding_config (dict): Configuration for the class embedding layer.
         """
         super(Unet2DClassifierFreeModel, self).__init__(**unet_config)
-        self.gamma = gamma
-        self.channel_mask = torch.full((num_channels,), True, dtype=torch.bool)
-        self.channel_mask[keep_channels] = False
+        self.w = w
         self.fixed_h = 16  # must be power of 2
-
+        self.channel_mask = torch.full((self.fixed_h,), True, dtype=torch.bool)
+        self.channel_mask[keep_channels] = False
     
     def forward(self, x, time, **kwargs):
         h = x.shape[1]
