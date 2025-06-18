@@ -4,6 +4,7 @@ from torch import vmap
 import copy
 from torch.func import stack_module_state, functional_call
 from diffusers import UNet1DModel, UNet2DModel
+import importlib
 
 class MLPNaiveEnsemble(nn.Module):
     """
@@ -15,13 +16,17 @@ class MLPNaiveEnsemble(nn.Module):
         self.E = ensemble_size
 
         # create E real copies, then stack their states
+        mlp_module, mlp_class = mlp_class.rsplit('.', 1)
+        mlp_module = importlib.import_module(mlp_module)
+        mlp_class = getattr(mlp_module, mlp_class)
+   
         models  = [mlp_class(**mlp_kwargs) for _ in range(ensemble_size)]
         self.models = nn.ModuleList(models) 
 
 
     def forward(self, x, t, **kwargs):                       
         # Vectorise over the leading E dimension of params and buffers
-        return torch.stack([self.models[i](x, t, **kwargs)[0] for i in range(self.E)], axis=0)
+        return (torch.stack([self.models[i](x, t, **kwargs)[0] for i in range(self.E)], axis=0), None)
 
 class MLPEnsemble(nn.Module):
     """
@@ -40,11 +45,8 @@ class MLPEnsemble(nn.Module):
         models  = [mlp_class(**mlp_kwargs) for _ in range(ensemble_size)]
         params, buffers = stack_module_state(models)          # :contentReference[oaicite:0]{index=0}
 
-        # register parameters so standard optimisers can see them
-        self.params = nn.ParameterDict({k: nn.Parameter(v) for k, v in params.items()})
-        #self.buffers = nn.ModuleDict({k: nn.Parameter(v) for k, v in buffers.items()})
-        for n, b in buffers.items():
-            self.register_buffer(n, b)
+        self.params = nn.ParameterList(params)                
+        self.buffers = nn.ParameterList(buffers)            
 
     # ------- Functional forward for a single member --------------------------------
     def _fmodel(self, param_single, buffer_single, x, t):
@@ -275,6 +277,7 @@ class Unet2DClassifierFreeModel(UNet2DModel):
         self.fixed_h = 16  # must be power of 2
         self.channel_mask = torch.full((self.fixed_h,), True, dtype=torch.bool)
         self.channel_mask[keep_channels] = False
+        self.channel_mask[0] = False  # always keep the first channel (fCO2)
     
     def forward(self, x, time, **kwargs):
         h = x.shape[1]
@@ -295,8 +298,42 @@ class Unet2DClassifierFreeModel(UNet2DModel):
         pred = super().forward(x.unsqueeze(1), time, **kwargs)[0]
         uncond_pred = super().forward(x_uncond.unsqueeze(1), time, **kwargs)[0]
         # classifier free prediction
-        pred = pred + self.w * (pred - uncond_pred)
+        pred = uncond_pred + self.w * (pred - uncond_pred)
         return (pred[:, 0, 0:1, :],)
     
     def set_w(self, new_w):
         self.w = new_w
+
+class UNet2DShipMix(UNet2DModel):
+    def __init__(self, unet_config, ship_mix_cols):
+        """
+        UNet2D model with class embedding.
+        
+        Args:
+            unet_config (dict): Configuration for the UNet2D model.
+            class_embedding_config (dict): Configuration for the class embedding layer.
+        """
+        super(UNet2DShipMix, self).__init__(**unet_config)
+        self.mixcols = ship_mix_cols
+        self.fixed_h = 16
+        self.mixmask = torch.full((self.fixed_h,), True, dtype=torch.bool)
+        self.mixmask[ship_mix_cols] = False
+
+    def forward(self, x, time, **kwargs):
+        h = x.shape[1]
+        pad = self.fixed_h - h
+        if pad < 0:
+            raise ValueError(f"More channels ({h}) than fixed_h ({self.fixed_h})")
+        x = F.pad(x, (0, 0, 0, pad))    # (B, C, bins) → (B, 1, fixed_h, bins)
+
+        ship_data = x[:, self.mixcols, :]
+        model_input = x[:, self.mixmask, :].clone()
+        lambda_mix = torch.rand((model_input.shape[0], 2, 1), device=model_input.device)
+        temp_sal = model_input[:, [1,2], :]  # temperature and salinity
+        temp_sal = temp_sal * (1-lambda_mix) + ship_data * lambda_mix
+        model_input[:, [1,2], :] = temp_sal
+        model_input[:, 0, :] += (torch.rand_like(model_input[:, 0, :]) * 10) - 5 # also perturb the fCO2 by +/- 5
+        
+        # Pass through the model
+        pred = super().forward(model_input.unsqueeze(1), time, **kwargs)[0]
+        return (pred[:, 0, 0:1, :],)
