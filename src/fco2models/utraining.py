@@ -338,7 +338,7 @@ def add_xco2(df, xco2_mbl):
 
     return df 
 import xarray as xr
-def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_log=True):
+def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_log=True, add_clim=True, add_seas=True):
     """prepare dataframe for training
         - the idea is to use it for "segment independent" feature extraction (which is easier to do in a dataframe)
         - this is a bit of a hack, but it works for now
@@ -384,17 +384,41 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_lo
         if 'xco2' not in df.columns:
             if with_log:
                 logger.info("adding xco2 data")
-            # xco2_mbl = xr.open_dataarray('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/xco2mbl-timeP7D_1D-lat25km.nc', engine="scipy")
-            xco2_mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
+            xco2_mbl = xr.open_dataarray('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/xco2mbl-timeP7D_1D-lat25km.nc')
+            #xco2_mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
             df = add_xco2(df, xco2_mbl)
         
         if 'seamask' not in df.columns:
             if with_log:
                 logger.info("adding seamask data")
-            # seamask = xr.open_dataset('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/seamask/seamask_1d.nc')
-            masks = xr.open_dataset("../data/masks/RECCAP2_masks.nc")
+            masks = xr.open_dataset('/home/jovyan/work/datapolybox/masks/RECCAP2_masks.nc')
+            # masks = xr.open_dataset("../data/masks/RECCAP2_masks.nc")
             selection = df[['lat', 'lon']].to_xarray()
             df['seamask'] = masks.seamask.sel(selection, method='nearest')
+        
+        if add_clim:
+            if with_log:
+                logger.info("adding climatology data")
+            clims = xr.open_dataset("https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/inference_for_gregor2024/clims_8daily_25km_v01.zarr/", engine='zarr')
+            selection = df[['lat', 'lon', 'day_of_year']].to_xarray()
+            selection = selection.rename({'day_of_year': 'dayofyear'})
+            clims_df = clims.sel(selection, method='nearest').to_dataframe()
+            # rename columns to match the dataframe
+            clims_df = clims_df.rename(columns=lambda col: col + "_clim")
+            # add climatology data to the dataframe
+            df = pd.concat([df, clims_df], axis=1)
+
+        if add_seas:
+            if with_log:
+                logger.info("adding climatology data")
+            clims = xr.open_dataset("https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/inference_for_gregor2024/seas_8daily_25km_v01.zarr/", engine='zarr')
+            selection = df[['lat', 'lon', 'day_of_year']].to_xarray()
+            selection = selection.rename({'day_of_year': 'dayofyear'})
+            clims_df = clims.sel(selection, method='nearest').to_dataframe()
+            # rename columns to match the dataframe
+            clims_df = clims_df.rename(columns=lambda col: col + "_seas")
+            # add climatology data to the dataframe
+            df = pd.concat([df, clims_df], axis=1)
         
         if with_target:
             logger.info("removing xco2 levels from fco2rec_uatm")
