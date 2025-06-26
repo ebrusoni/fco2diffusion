@@ -152,7 +152,7 @@ def prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, class_em
 
 
 
-def full_denoise(model, noise_scheduler, context_loader, jump=None, pos_encodings_start=None):
+def full_denoise(model, noise_scheduler, context_loader, jump=None, pos_encodings_start=None, eta=0.0):
     """full denoising loop for diffusion model"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}")
@@ -184,7 +184,7 @@ def full_denoise(model, noise_scheduler, context_loader, jump=None, pos_encoding
                 class_labels = None if pos_encodings_start is None else pos_to_timestep(pos_encodings, noise_scheduler)
                 residual = model(sample_context, t, return_dict=False, class_labels=class_labels)[0]
 
-            output_scheduler = noise_scheduler.step(residual, t, sample)
+            output_scheduler = noise_scheduler.step(residual, t, sample, eta=eta)
             if jump is not None:
                 x_0 = output_scheduler.pred_original_sample
                 if t < jump:
