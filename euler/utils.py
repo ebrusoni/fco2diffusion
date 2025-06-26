@@ -13,6 +13,13 @@ def add_src_and_logger(is_renkolab, save_dir):
     else:
         DATA_PATH = '../data/training_data/'
     
+    if save_dir is None:
+        logging.basicConfig(
+            level=logging.INFO, 
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        return DATA_PATH, None
+    
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     
