@@ -220,8 +220,7 @@ def predict_mean_eval(model, dataloader, is_sequence=True):
             # Append the predictions to the list
             predictions.append(mean_pred.cpu().numpy())
             progress_bar.set_postfix({"Loss": loss_fn(mean_pred, target).mean().item()})
-
-    return np.concatenate(losses, axis=0), np.concatenate(predictions, axis=0)
+    return np.concatenate(losses, axis=1), np.concatenate(predictions, axis=1)
 
 
 
