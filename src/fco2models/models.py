@@ -295,8 +295,8 @@ class Unet2DClassifierFreeModel(UNet2DModel):
             
         x_uncond = x.clone()
         x_uncond[:, self.channel_mask, :] = 0.0 # keep target, temperature, salinity, and mask, but set all other channels to 0
-        pred = super().forward(x.unsqueeze(1), time, **kwargs)[0]
-        uncond_pred = super().forward(x_uncond.unsqueeze(1), time, **kwargs)[0]
+        pred = super().forward(x.unsqueeze(1), time, **kwargs)[0] if self.w != 0 else 0
+        uncond_pred =  super().forward(x_uncond.unsqueeze(1), time, **kwargs)[0] if self.w != 1 else 0
         # classifier free prediction
         pred = uncond_pred + self.w * (pred - uncond_pred)
         return (pred[:, 0, 0:1, :],)
