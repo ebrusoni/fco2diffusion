@@ -1,7 +1,7 @@
 from utils import add_src_and_logger
-save_dir = f'../models/meanstd_mini/'
+save_dir = f'../models/cfree_mini/'
 is_renkulab = True
-DATA_PATH, logging = add_src_and_logger(is_renkulab, save_dir)
+DATA_PATH, logging = add_src_and_logger(is_renkulab, None)
 
 import json
 import pandas as pd
@@ -16,10 +16,9 @@ from fco2models.ueval import load_model
 from fco2models.utraining import prep_df, make_monthly_split, get_segments, get_context_mask, normalize_dss, get_stats_df, full_denoise
 
 # load model
-save_path = '../models/cfree1_mini/'
 model_path = 'e_200.pt'
 model_class = Unet2DClassifierFreeModel
-model, noise_scheduler, params, losses = load_model(save_path, model_path, model_class, training_complete=True)
+model, noise_scheduler, params, losses = load_model(save_dir, model_path, model_class, training_complete=True)
 print("Model loaded")
 
 # load data
@@ -103,7 +102,7 @@ ddim_scheduler = DDIMScheduler(
 ddim_scheduler.set_timesteps(50)
 
 
-n_rec=20 # number of samples to generate
+n_rec=50 # number of samples to generate
 
 def denoise_samples(ds_norm, model, scheduler, n_rec):
     context = ds_norm[:, 1:, :] # remove target column
@@ -111,10 +110,7 @@ def denoise_samples(ds_norm, model, scheduler, n_rec):
     print("context_ds shape: ", context_ds.shape)
     context_loader = DataLoader(context_ds, batch_size=512, shuffle=False)
     with torch.no_grad():
-        # denoise the samples
-        print("Denoising samples")
         samples_norm = full_denoise(model, scheduler, context_loader, jump=None, eta=0)
-    samples_norm = samples_norm.cpu().numpy()
     return samples_norm
 
 def rescale_samples(samples_norm, params):
@@ -126,12 +122,17 @@ def rescale_samples(samples_norm, params):
         raise ValueError(f"Unknown mode: {params['mode']}")
     return samples
 
+w=1.0
+model.set_w(w)
+print("Denoise validation set")
 val_samples_norm = denoise_samples(val_ds_norm, model, ddim_scheduler, n_rec)
 val_samples = rescale_samples(val_samples_norm, params).reshape(-1, n_rec, 64)
 
+print("Denoise training set")
 train_samples_norm = denoise_samples(train_ds_norm, model, ddim_scheduler, n_rec)
 train_samples = rescale_samples(train_samples_norm, params).reshape(-1, n_rec, 64)
 
+print("Denoise test set")
 test_samples_norm = denoise_samples(test_ds_norm, model, ddim_scheduler, n_rec)
 test_samples = rescale_samples(test_samples_norm, params).reshape(-1, n_rec, 64)
 
@@ -202,10 +203,10 @@ test_err_stats = get_df_err_stats(df_test)
 print("Validation error statistics:")
 for key, value in val_err_stats.items():
     print(f"{key}: {value:.4f}")
-print("Training error statistics:")
+print("\nTraining error statistics:")
 for key, value in train_err_stats.items():
     print(f"{key}: {value:.4f}")
-print("Test error statistics:")
+print("\nTest error statistics:")
 for key, value in test_err_stats.items():
     print(f"{key}: {value:.4f}")
 
@@ -214,6 +215,8 @@ results = {
     'val_err_stats': val_err_stats,
     'train_err_stats': train_err_stats,
     'test_err_stats': test_err_stats,
+    'w': w,
+    'n_rec':n_rec
 }
 
 with open(save_dir + 'error_stats.json', 'w') as f:
