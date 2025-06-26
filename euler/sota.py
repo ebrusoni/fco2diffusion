@@ -1,7 +1,8 @@
 
+import fco2models.umeanest
 from utils import add_src_and_logger
 
-save_dir = f'../models/sota_ensemble/'
+save_dir = f'../models/sota_ensemble_anoms/'
 DATA_PATH, logger = add_src_and_logger(False, save_dir)
 
 import pandas as pd 
@@ -21,6 +22,7 @@ import logging
 from fco2models.utraining import prep_df, normalize_dss, save_losses_and_png, get_stats
 from fco2models.umeanest import train_mean_estimator, MLPModel, train_pointwise_mlp
 from fco2models.models import MLPEnsemble, MLPNaiveEnsemble
+import fco2models
 
 np.random.seed(1)
 torch.manual_seed(0)
@@ -94,6 +96,12 @@ df = df[df.ice_cci < 0.8]
 # renane lon and lat columns
 df = df.rename(columns={'lon_005':'lon', 'lat_005': 'lat'})
 df = prep_df(df, bound=True, logger=logging)[0]
+df['sst_clim'] += 273.15
+df['sst_anom'] = df['sst_cci'] - df['sst_clim']
+df['sss_anom'] = df['sss_cci'] - df['sss_clim']
+df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
+df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
+df['mld_anom'] = df['mld_dens_soda'] - df['mld_clim']
 
 test_months = pd.date_range('1982-01', '2022-01', freq='7MS').values.astype('datetime64[M]')
 months = df.time_1d.values.astype('datetime64[M]')
@@ -105,9 +113,12 @@ logger.info(f"Removed all points not in seamask in validation set")
 df_val = df_val[df_val.seamask == 1]
 
 # drop nan rows
-predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'ssh_sla', 
-              'mld_dens_soda', 'xco2', 'co2_clim8d', 'sin_day_of_year',
-              'cos_day_of_year', 'sin_lat', 'sin_lon_cos_lat', 'cos_lon_cos_lat']
+# predictors = ['sst_cci', 'sss_cci', 'chl_globcolour', 'ssh_sla', 
+#               'mld_dens_soda', 'xco2', 'co2_clim8d', 'sin_day_of_year',
+#               'cos_day_of_year', 'sin_lat', 'sin_lon_cos_lat', 'cos_lon_cos_lat']
+predictors = ['sst_anom', 'sss_anom', 'chl_anom', 'ssh_anom', 'mld_anom',
+              'sst_clim', 'sss_clim', 'chl_clim', 'ssh_clim', 'mld_clim',
+              'xco2', 'co2_clim8d']
 target = 'fco2rec_uatm'
 df_train = df_train[[target] + predictors].dropna()
 df_val = df_val[[target] + predictors].dropna()
@@ -176,18 +187,24 @@ val_dataloader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=Fal
 
 
     
-model_params = {
+model_params_mlp = {
     "input_dim": train_ds.shape[1] - 1,
-    "hidden_dim": 256,
+    "hidden_dim": 128,
     "output_dim": 1,
 }
 
-model = MLPNaiveEnsemble(5, MLPModel, model_params)
+model_params = {
+    "ensemble_size": 20,
+    "mlp_class": "fco2models.umeanest.MLPModel",
+    "mlp_kwargs": model_params_mlp,
+}
+
+model = MLPNaiveEnsemble(**model_params)
 def count_trainable_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 print(f"Number of trainable parameters: {count_trainable_parameters(model)}")
-num_epochs = 50
+num_epochs = 30
 optimizer = optim.Adam(model.parameters(), lr=lr)
 
 lr_params = {}
