@@ -337,3 +337,25 @@ class UNet2DShipMix(UNet2DModel):
         # Pass through the model
         pred = super().forward(model_input.unsqueeze(1), time, **kwargs)[0]
         return (pred[:, 0, 0:1, :],)
+
+from fco2models.time_models import TSTransformerEncoderClassiregressor
+class TSEncoderWrapper(TSTransformerEncoderClassiregressor):
+    def __init__(self, **TSconfig):
+        """
+        Wrapper for the TSTransformerEncoderClassiregressor to use it as a model.
+        
+        Args:
+            **TSconfig: Configuration parameters for the TSTransformerEncoderClassiregressor.
+        """
+        super().__init__(**TSconfig)
+
+    def forward(self, x, t, **kwargs):
+        b, c, s = x.shape
+        t = torch.stack([t] * s, dim=1).unsqueeze(1) # this is a time vector of shape (B, 1, S)
+        x = torch.cat([x, t], dim=1)  # concatenate time as a feature
+
+        out = super().forward(x.permute(0, 2, 1), **kwargs) # (B, S, C) → (B, C, S)
+
+        return (out.unsqueeze(1), None) # return shape (B, 1, S)
+
+        
