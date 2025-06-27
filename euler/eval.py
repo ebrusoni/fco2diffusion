@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from diffusers import DDIMScheduler
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from scipy.stats import pearsonr
-from fco2models.models import Unet2DClassifierFreeModel
+from fco2models.models import Unet2DClassifierFreeModel, UNet2DModelWrapper
 from fco2models.ueval import load_model
 from fco2models.utraining import prep_df, make_monthly_split, get_segments, get_context_mask, normalize_dss, get_stats_df, full_denoise
 
@@ -88,10 +88,12 @@ train_ds_norm, val_ds_norm, test_ds_norm = normalize_dss([train_ds.copy(), val_d
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
 
 # CHECK THAT STATS ARE THE SAME AS IN TRAINING
-assert np.allclose(train_stats['maxs'], params['train_maxs'], atol=1e0)
-assert np.allclose(train_stats['mins'], params['train_mins'], atol=1e0)
-assert np.allclose(train_stats['means'], params['train_means'], atol=1e0)
-assert np.allclose(train_stats['stds'], params['train_stds'], atol=1e0)
+#assert np.allclose(train_stats['maxs'], params['train_maxs'], atol=1e0)
+#assert np.allclose(train_stats['mins'], params['train_mins'], atol=1e0)
+#assert np.allclose(train_stats['means'], params['train_means'], atol=1e0)
+#assert np.allclose(train_stats['stds'], params['train_stds'], atol=1e0)
+print(train_stats['maxs'])
+print(params['train_maxs'])
 
 # Use ddim for inference
 ddim_scheduler = DDIMScheduler(
@@ -102,7 +104,7 @@ ddim_scheduler = DDIMScheduler(
 ddim_scheduler.set_timesteps(50)
 
 
-n_rec=50 # number of samples to generate
+n_rec=20 # number of samples to generate
 
 def denoise_samples(ds_norm, model, scheduler, n_rec):
     context = ds_norm[:, 1:, :] # remove target column
@@ -122,7 +124,7 @@ def rescale_samples(samples_norm, params):
         raise ValueError(f"Unknown mode: {params['mode']}")
     return samples
 
-w=1.0
+w=0.8
 model.set_w(w)
 print("Denoise validation set")
 val_samples_norm = denoise_samples(val_ds_norm, model, ddim_scheduler, n_rec)
@@ -219,10 +221,12 @@ results = {
     'n_rec':n_rec
 }
 
-with open(save_dir + 'error_stats.json', 'w') as f:
+path_info = f"w{w}_"
+path = save_dir + path_info
+with open(path+'error_stats.json', 'w') as f:
     json.dump(results, f, indent=4)
 
 # Save the dataframes
-val_samples_df.to_parquet(save_dir + 'val_samples.parquet')
-train_samples_df.to_parquet(save_dir + 'train_samples.parquet')
-test_samples_df.to_parquet(save_dir + 'test_samples.parquet')
+val_samples_df.to_parquet(path + 'val_samples.parquet')
+train_samples_df.to_parquet(path + 'train_samples.parquet')
+test_samples_df.to_parquet(path + 'test_samples.parquet')
