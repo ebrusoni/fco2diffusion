@@ -362,4 +362,19 @@ class TSEncoderWrapper(TSTransformerEncoderClassiregressor):
 
         return (out.unsqueeze(1), None) # return shape (B, 1, S)
 
-        
+
+class DiffusionEnsemble(nn.Module):
+    def __init__(self, ensemble_size: int, diffusion_class, diffusion_kwargs):
+        super().__init__()
+        self.E = ensemble_size
+        # create E real copies, then stack their states
+        diffusion_module, diffusion_class = diffusion_class.rsplit('.', 1)
+        diffusion_module = importlib.import_module(diffusion_module)
+        diffusion_class = getattr(diffusion_module, diffusion_class)
+
+        models  = [diffusion_class(**diffusion_kwargs) for _ in range(ensemble_size)]
+        self.models = nn.ModuleList(models)
+
+    def forward(self, x, t, **kwargs):
+        # Vectorise over the leading E dimension of params and buffers
+        return (torch.stack([self.models[i](x, t, **kwargs)[0] for i in range(self.E)], axis=0), None)
