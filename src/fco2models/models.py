@@ -325,16 +325,20 @@ class UNet2DShipMix(UNet2DModel):
         if pad < 0:
             raise ValueError(f"More channels ({h}) than fixed_h ({self.fixed_h})")
         x = F.pad(x, (0, 0, 0, pad))    # (B, C, bins) → (B, 1, fixed_h, bins)
-
+        
+        if not self.training:
+            pred = super().forward(x.unsqueeze(1), time, **kwargs)[0]
+            return (pred[:, 0, 0:1, :],)
+            
         ship_data = x[:, self.mixcols, :]
         model_input = x[:, self.mixmask, :].clone()
         lambda_mix = torch.rand((model_input.shape[0], 2, 1), device=model_input.device)
         temp_sal = model_input[:, [1,2], :]  # temperature and salinity
         temp_sal = temp_sal * (1-lambda_mix) + ship_data * lambda_mix
-        model_input[:, [1,2], :] = temp_sal
-        model_input[:, 0, :] += (torch.rand_like(model_input[:, 0, :]) * 10) - 5 # also perturb the fCO2 by +/- 5
+        nan_mask = ~torch.isnan(temp_sal)
+        model_tempsal = model_input[:, [1,2], :]
+        model_tempsal[nan_mask] = temp_sal[nan_mask]
         
-        # Pass through the model
         pred = super().forward(model_input.unsqueeze(1), time, **kwargs)[0]
         return (pred[:, 0, 0:1, :],)
 
