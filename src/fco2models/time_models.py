@@ -230,12 +230,21 @@ class TSTransformerEncoderClassiregressor(nn.Module):
 
         self.feat_dim = feat_dim
         self.num_classes = num_classes
-        self.output_layer = self.build_output_module(d_model, max_len, num_classes)
+        #self.output_layer = self.build_output_module(d_model, max_len, num_classes, activation)
+        self.output_layer1 = nn.Linear(d_model, 1)  # output layer for regression
+        self.output_layer2 = nn.Linear(max_len, num_classes)  # output layer for
 
-    def build_output_module(self, d_model, max_len, num_classes):
-        output_layer = nn.Linear(d_model * max_len, num_classes)
+    def build_output_module(self, d_model, max_len, num_classes, activation):
+        # output_layer = nn.Linear(d_model * max_len, num_classes)
         # no softmax (or log softmax), because CrossEntropyLoss does this internally. If probabilities are needed,
         # add F.log_softmax and use NLLoss
+        output_layer1 = nn.Linear(d_model, 1)
+        output_layer2 = nn.Linear(max_len, num_classes)
+        output_layer = nn.Sequential(
+            output_layer1,
+            nn.ReLU(),
+            output_layer2
+        )
         return output_layer
 
     def forward(self, X, padding_masks):
@@ -260,7 +269,10 @@ class TSTransformerEncoderClassiregressor(nn.Module):
 
         # Output
         output = output * padding_masks.unsqueeze(-1)  # zero-out padding embeddings
-        output = output.reshape(output.shape[0], -1)  # (batch_size, seq_length * d_model)
-        output = self.output_layer(output)  # (batch_size, num_classes)
+        #output = output.reshape(output.shape[0], -1)  # (batch_size, seq_length * d_model)
+        output = self.output_layer1(output)  # (batch_size, num_classes)
+        output = output.squeeze(-1)
+        output = self.act(output)  # apply activation function
+        output = self.output_layer2(output)
 
         return output
