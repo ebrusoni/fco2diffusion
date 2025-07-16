@@ -146,6 +146,31 @@ class TransformerBatchNormEncoderLayer(nn.modules.Module):
         src = src.permute(2, 0, 1)  # restore (seq_len, batch_size, d_model)
         return src
 
+class TimeStepEmbedding(nn.Module):
+    """
+    Time step embedding for Transformer models. It is used to inject time step information into the model.
+    The time step is encoded as a learnable embedding vector.
+    """
+
+    def __init__(self, d_model):
+        super(TimeStepEmbedding, self).__init__()
+        self.d_model = d_model
+        self.time_step_embedding = nn.Embedding(1000, d_model)  # Assuming a maximum of 1000 time steps
+
+    def forward(self, x: Tensor, t: Tensor) -> Tensor:
+        """
+        Args:
+            x: Input tensor of shape (seq_length, batch_size, d_model).
+            t: Time step tensor of shape (batch_size,).
+
+        Returns:
+            Tensor of shape (seq_length, batch_size, d_model) with time step embeddings added.
+        """
+        # Expand time step embedding to match the batch size
+        t_embedding = self.time_step_embedding(t).unsqueeze(0)  # Shape: (1, batch_size, d_model)
+        return torch.cat((x, t_embedding), dim=0)  # Concatenate along the sequence length dimension
+            
+        
 
 class TSTransformerEncoder(nn.Module):
 
@@ -216,6 +241,7 @@ class TSTransformerEncoderClassiregressor(nn.Module):
 
         self.project_inp = nn.Linear(feat_dim, d_model)
         self.pos_enc = get_pos_encoder(pos_encoding)(d_model, dropout=dropout*(1.0 - freeze), max_len=max_len)
+        self.timestep_emb = TimeStepEmbedding(d_model)
 
         if norm == 'LayerNorm':
             encoder_layer = TransformerEncoderLayer(d_model, self.n_heads, dim_feedforward, dropout*(1.0 - freeze), activation=activation)
@@ -247,7 +273,7 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         )
         return output_layer
 
-    def forward(self, X, padding_masks):
+    def forward(self, X, t, padding_masks):
         """
         Args:
             X: (batch_size, seq_length, feat_dim) torch tensor of masked features (input)
@@ -261,6 +287,7 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         inp = self.project_inp(inp) * math.sqrt(
             self.d_model)  # [seq_length, batch_size, d_model] project input vectors to d_model dimensional space
         inp = self.pos_enc(inp)  # add positional encoding
+        inp = self.timestep_emb(inp, torch.full((X.shape[1], ), t))
         # NOTE: logic for padding masks is reversed to comply with definition in MultiHeadAttention, TransformerEncoderLayer
         output = self.transformer_encoder(inp, src_key_padding_mask=~padding_masks)  # (seq_length, batch_size, d_model)
         output = self.act(output)  # the output transformer encoder/decoder embeddings don't include non-linearity

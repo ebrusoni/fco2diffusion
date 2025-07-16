@@ -356,13 +356,13 @@ class TSEncoderWrapper(TSTransformerEncoderClassiregressor):
     def forward(self, x, t, return_dict=False, **kwargs):
         b, c, s = x.shape
         #print(t.shape)
-        if t.ndim == 0:
-            t = torch.full((b,), t.item()).to(x.device)
+        #if t.ndim == 0:
+        #    t = torch.full((b,), t.item()).to(x.device)
         #print(t.shape)
-        t = torch.stack([t] * s, dim=1).unsqueeze(1) # this is a time vector of shape (B, 1, S)
-        x = torch.cat([x, t], dim=1)  # concatenate time as a feature
+        #t = torch.stack([t] * s, dim=1).unsqueeze(1) # this is a time vector of shape (B, 1, S)
+        #x = torch.cat([x, t], dim=1)  # concatenate time as a feature
 
-        out = super().forward(x.permute(0, 2, 1), torch.ones((b, s)).bool().to(x.device), **kwargs) # (B, S, C) → (B, C, S)
+        out = super().forward(x.permute(0, 2, 1), t, torch.ones((b, s)).bool().to(x.device), **kwargs) # (B, S, C) → (B, C, S)
 
         return (out.unsqueeze(1), None) # return shape (B, 1, S)
 
