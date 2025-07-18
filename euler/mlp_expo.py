@@ -1,5 +1,5 @@
 from utils import add_src_and_logger
-save_dir = f'../models/anoms_sea/'
+save_dir = f'../models/sota_anoms/'
 is_renkulab = True
 DATA_PATH, logging = add_src_and_logger(is_renkulab, None)
 
@@ -13,14 +13,19 @@ from fco2models.ueval import load_models
 from fco2models.utraining import prep_df, make_monthly_split
 
 model_info = {
-    'sota_ensemble': ['../models/sota_ensemble/', 'e_30.pt', MLPNaiveEnsemble],
+    'sota_ensemble': [save_dir, 'e_30.pt', MLPNaiveEnsemble],
 }
 models = load_models(model_info)
 
 
-DATA_PATH = "../data/training_data/"
 df = pd.read_parquet(DATA_PATH + "SOCAT_1982_2021_grouped_colloc_augm_bin.pq", engine='pyarrow')
-df = prep_df(df, bound=True, add_clim=False, add_seas=False)[0]
+df = prep_df(df, bound=True)[0]
+df['sst_clim'] += 273.15
+df['sst_anom'] = df['sst_cci'] - df['sst_clim']
+df['sss_anom'] = df['sss_cci'] - df['sss_clim']
+df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
+df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
+df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim']
 _, mask_val, mask_test = make_monthly_split(df)
 df_val = df.loc[df.expocode.map(mask_val), :]
 df_test = df.loc[df.expocode.map(mask_test), :]
