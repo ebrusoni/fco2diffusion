@@ -1,5 +1,5 @@
 from utils import add_src_and_logger
-save_dir = f'../models/meanstd_mini/'
+save_dir = f'../models/anoms_sea_1d/'
 is_renkolab = True
 DATA_PATH, logging = add_src_and_logger(is_renkolab, save_dir)
 
@@ -17,7 +17,7 @@ from diffusers import DDPMScheduler, UNet1DModel
 
 from fco2models.utraining import prep_df, normalize_dss, load_checkpoint, train_diffusion, save_losses_and_png_diffusion
 from fco2models.utraining import get_segments_random, get_segments, make_monthly_split, get_stats_df, get_context_mask, replace_with_cruise_data, perturb_fco2
-from fco2models.models import MLP, UNet2DModelWrapper, ConvNet, UNet2DModelWrapper, ClassEmbedding, Unet2DClassifierFreeModel, UNet2DShipMix
+from fco2models.models import MLP, UNet2DModelWrapper, ConvNet, UNet2DModelWrapper, ClassEmbedding, Unet2DClassifierFreeModel, UNet2DShipMix, TSEncoderWrapper, DiffusionEnsemble, UNet1DModelWrapper
 from fco2models.umeanest import train_mean_estimator
 
 # fix random seed for reproducibility
@@ -25,7 +25,7 @@ np.random.seed(0)
 torch.manual_seed(0)
 torch.cuda.manual_seed(0)
 
-lr = 4e-5
+lr = 1e-3
 batch_size = 128
 
 
@@ -39,42 +39,45 @@ df['sst_anom'] = df['sst_cci'] - df['sst_clim']
 df['sss_anom'] = df['sss_cci'] - df['sss_clim']
 df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
 df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
-df['mld_anom'] = df['mld_dens_soda'] - df['mld_clim']
+df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim']
 print(df.fco2rec_uatm.max(), df.fco2rec_uatm.min())
+print(f"dataset shape: {df.shape}")
 
 mask_train, mask_val, mask_test = make_monthly_split(df)
 df_train = df[df.expocode.map(mask_train)]
 df_val = df[df.expocode.map(mask_val)]
+print(df_val.seamask.sum()/df_val.shape[0])
 df_test = df[df.expocode.map(mask_test)]
 print(df_train.shape, df_val.shape, df_test.shape)
 assert df_val.expocode.isin(df_test.expocode).sum() == 0, "expocode ids overlap between validation and test sets"
 assert df_train.expocode.isin(df_val.expocode).sum() == 0, "expocode ids overlap between train and validation sets"
 assert df_train.expocode.isin(df_test.expocode).sum() == 0, "expocode ids overlap between train and test sets"
-
-print(df_train.fco2rec_uatm.max(), df_train.fco2rec_uatm.min())
+print(f"training dataset shape: {df_train.shape}")
+print(f"validation dataset shape: {df_val.shape}")
+print(f"test dataset shape: {df_test.shape}")
+#print(df_train.fco2rec_uatm.max(), df_train.fco2rec_uatm.min())
 
 
 target = "fco2rec_uatm"
 predictors = ['sst_anom', 'sss_anom', 'chl_anom', 'ssh_anom', 'mld_anom',
               'sst_clim', 'sss_clim', 'chl_clim', 'ssh_clim', 'mld_clim',
               'xco2', 'co2_clim8d']
-positional_encoding = []#['sin_day_of_year', 'cos_day_of_year', 'sin_lat', 'sin_lon_cos_lat', 'cos_lon_cos_lat']
+positional_encoding = ['sin_day_of_year', 'cos_day_of_year', 'sin_lat', 'sin_lon_cos_lat', 'cos_lon_cos_lat']
 model_inputs = [target] + predictors + positional_encoding
-socat_data = []#["sst_deg_c", "sal"]
+socat_data =  []#["sst_deg_c", "sal"]
 cols = model_inputs + socat_data
 
-train_stats = get_stats_df(df_train, model_inputs, logger=logging)
+train_stats = get_stats_df(df_train, model_inputs + socat_data, logger=logging)
 
 segment_df_train = df_train.groupby("expocode").apply(
     lambda x: get_segments_random(x, cols, n=4),
     include_groups=False,
 )
-
 train_socat_ds = np.concatenate(segment_df_train.values, axis=0)
 train_ds = train_socat_ds[:, :, :]
 #socat_ds = train_socat_ds[:, -2:, :]
 # convert to kelvin
-#train_ds[:, -2, :] += 273.15
+#socat_ds[:, 0, :] += 273.15
 #train_ds = replace_with_cruise_data(train_ds, socat_ds, prob=0.5, logger=logging)
 #train_ds = perturb_fco2(train_ds, logger=logging)
 
@@ -92,12 +95,14 @@ test_ds = np.concatenate(segment_df_test.values, axis=0)
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
 train_context_mask, val_context_mask, test_context_mask = get_context_mask([train_ds, val_ds, test_ds], logger=logging)
 train_ds = train_ds[train_context_mask]
+#socat_ds = socat_ds[train_context_mask]
 val_ds = val_ds[val_context_mask]
 test_ds = test_ds[test_context_mask]
 print(f"removing context nans")
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
 
 mode = 'mean_std'
+#train_ds = np.concatenate([train_ds, socat_ds], axis=1)
 train_ds, val_ds, test_ds = normalize_dss([train_ds, val_ds, test_ds], train_stats, mode, ignore=[], logger=logging)
 
 # count nans in first column of the dataset
@@ -113,39 +118,42 @@ print(f"train_ds shape: {train_ds.shape}")
 print(f"val_ds shape: {val_ds.shape}")
 
 # timestep_dim = 16
-# layers_per_block = 3
-# down_block_types = ('DownBlock1DNoSkip', 'AttnDownBlock1D')
-# up_block_types = ('AttnUpBlock1D', 'UpBlock1DNoSkip')
-# model_params = {
-#     "sample_size": 64,
-#     "in_channels": timestep_dim + train_ds.shape[1] + 1,
-#     "out_channels": 1,
-#     "layers_per_block": layers_per_block,
-#     "block_out_channels": (64, 128),
-#     "down_block_types": down_block_types,
-#     "up_block_types": up_block_types
-# }
-# logging.info("Using UNet1DModel")
+layers_per_block = 2
+down_block_types = ("DownResnetBlock1D", "DownResnetBlock1D")
+up_block_types = ("UpResnetBlock1D", "UpResnetBlock1D")
+model_params = {
+     "sample_size": 64,
+     "in_channels": train_ds.shape[1] + 1, #timestep_dim + train_ds.shape[1] + 1,
+     "out_channels": 8,
+     "layers_per_block": layers_per_block,
+     "block_out_channels": (16, 32),
+     "down_block_types": down_block_types,
+     "up_block_types": up_block_types,
+     "norm_num_groups": None,
+     "use_timestep_embedding": True,
+     "act_fn": "relu"
+}
+logging.info("Using UNet1DModel")
 
-# model = UNet1DModel(**model_params)
-num_epochs = 300
+model =  UNet1DModelWrapper(**model_params)
+num_epochs = 200
 timesteps = 1000
 
-layers_per_block = 2
-down_block_types = ('DownBlock2D', 'DownBlock2D')
-up_block_types = ('UpBlock2D', 'UpBlock2D')
-model_params = {
-    #"sample_size": (14, 64),
-    "in_channels": 1,
-    "out_channels": 1,
-    "layers_per_block": layers_per_block,
-    "block_out_channels": (8, 16),
-    "down_block_types": down_block_types,
-    "up_block_types": up_block_types,
-    "norm_num_groups": 8,
-    # "class_embed_type": "Identity",
-    # "num_class_embeds": None, 
-}
+#layers_per_block = 2
+#down_block_types = ('DownBlock2D', 'DownBlock2D')
+#up_block_types = ('UpBlock2D', 'UpBlock2D')
+#model_params = {
+#    "sample_size": (14, 64),
+#    "in_channels": 1,
+#    "out_channels": 1,
+#    "layers_per_block": layers_per_block,
+#    "block_out_channels": (16, 32),
+#    "down_block_types": down_block_types,
+#    "up_block_types": up_block_types,
+#    "norm_num_groups": 16,
+    #"class_embed_type": "Identity",
+    #"num_class_embeds": None, 
+#}
 #model_params={
 #    "unet_config": model_params,
 #    "ship_mix_cols": [13, 14]
@@ -155,8 +163,25 @@ model_params = {
 #    "keep_channels": [13],
 #    "num_channels": None
 #}
+#model_params= {
+#   "feat_dim": len(model_inputs) + 1, # add mask and timestep channels
+#   "max_len": 65,
+#   "d_model": 32,
+#   "n_heads": 4,
+#   "num_layers": 4,
+#   "dim_feedforward": 80,
+#   "num_classes":64,
+#   "activation": "relu",
+#   "pos_encoding": "learnable"
+#}
+#model_params = {
+#    "ensemble_size": 10,
+#    "diffusion_class": "fco2models.models.UNet2DModelWrapper",
+#    "diffusion_kwargs": model_params
+#}
 
-model = UNet2DModelWrapper(**model_params)
+
+#model = UNet2DModelWrapper(**model_params)
 def count_trainable_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Number of trainable parameters: {count_trainable_parameters(model)}")
@@ -179,12 +204,12 @@ train_dataloader = data.DataLoader(train_dataset, batch_size=batch_size, shuffle
 val_dataloader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
 lr_params = {
-    # "num_warmup_steps": 0.05 * num_epochs * len(train_dataloader), 
-    # "num_training_steps": num_epochs * len(train_dataloader)
+    "num_warmup_steps": 0.05 * num_epochs * len(train_dataloader), 
+    "num_training_steps": num_epochs * len(train_dataloader)
     }
-lr_scheduler = get_constant_schedule(optimizer, **lr_params)
+lr_scheduler = get_cosine_schedule_with_warmup(optimizer, **lr_params)
 
-checkpoint_path = "../models/meanstd_mini/final_model_e_200.pt"
+checkpoint_path = None #"../models/ts_encoder/final_model_e_400.pt"
 if checkpoint_path is not None:
     model, optimizer, lr_scheduler, epoch, train_losses_old, val_losses_old = load_checkpoint(checkpoint_path, model, optimizer, lr_scheduler) 
 else:
