@@ -1,5 +1,5 @@
 from utils import add_src_and_logger
-save_dir = f'../models/anoms_sea/'
+save_dir = f'../models/mean_std/'
 is_renkulab = True
 DATA_PATH, logging = add_src_and_logger(is_renkulab, None)
 
@@ -56,6 +56,14 @@ from fco2models.utraining import prep_df
 import time
 
 
+import torch
+from tqdm import tqdm
+import healpy as hp
+import numpy as np
+from fco2models.utraining import prep_df
+import time
+
+
 def segment_ds(data, orientation, segment_len=64):
     side, _, num_cols = data.shape
 
@@ -63,11 +71,10 @@ def segment_ds(data, orientation, segment_len=64):
         data = np.transpose(data, (1, 0, 2))
     elif not (orientation == 'horizontal'):
         raise ValueError(f"Unknown orientation {orientation}")
-    #segments = np.zeros(( (side**2) // segment_len, num_cols, segment_len), dtype=np.float32)
-    #for i in range(num_cols):
-        #segments[:, i, :] = data[:, :, i].reshape((side ** 2) // segment_len, segment_len)
-    #segments = np.transpose(data, (0, 2, 1)).reshape((side ** 2) // segment_len, num_cols, segment_len)
-    return np.transpose(data, (0, 2, 1)).reshape((side ** 2) // segment_len, num_cols, segment_len)
+    segments = np.zeros(( (side**2) // segment_len, num_cols, segment_len), dtype=np.float32)
+    for i in range(num_cols):
+        segments[:, i, :] = data[:, :, i].reshape((side ** 2) // segment_len, segment_len)
+    return segments
 
 
 def fdf_to_numpy(df, cols, nside):
@@ -75,13 +82,13 @@ def fdf_to_numpy(df, cols, nside):
     fpix = np.arange(fnpix)
     xyf = hp.pix2xyf(nside, fpix, nest=True)
     x,y = xyf[0], xyf[1]
-    fds = np.empty((nside, nside, len(cols)), dtype=np.float32)
-    fds[x, y, :] = df.to_numpy(copy=False)
+    fds = np.full((nside, nside, len(cols)), np.nan, dtype=np.float32)
+    fds[x, y, :] = df.values
     assert np.isnan(df.values[:, 0]).sum() == 0, "NaN values found in dataframe" # there should be no NaN values in the sample column (every coordinate should have a sample)
     assert np.isnan(fds[:, :, 0]).sum() == 0, "NaN values found in fds" # there should be no NaN values in the sample column (every coordinate should have a sample)
     return fds, x, y
 
-def do_step_loader(model, noise_scheduler, dataloader, t, device, jump, t_loop):
+def do_step_loader(model, noise_scheduler, dataloader, t, device, jump):
     samples = []
     for (ix, batch) in enumerate(dataloader):
         with torch.no_grad():
@@ -100,21 +107,20 @@ def do_step_loader(model, noise_scheduler, dataloader, t, device, jump, t_loop):
                 #sample = noise_scheduler.step(noise_pred, t, sample_prev).prev_sample
             sample[torch.isnan(sample)] = sample_prev[torch.isnan(sample)]
             samples.append(sample.cpu().numpy())
-            t_loop.set_postfix({"batch": {ix}})
     return np.concatenate(samples, axis=0)
 
 def do_random_rot(lon, lat):
         random_zrotation = np.random.random() * 360
-        random_yrotation = np.random.random() * 20
-        random_xrotation = np.random.random() * 20
-        rot = hp.Rotator(rot=(random_zrotation, random_yrotation, random_xrotation), eulertype="ZYX") # rotate only around the z-axis, so we do not mix equatirial and polar coordinates
+        #random_yrotation = np.random.random() * 20
+        #random_xrotation = np.random.random() * 20
+        rot = hp.Rotator(rot=(random_zrotation, 0, 0), eulertype="ZYX") # rotate only around the z-axis, so we do not mix equatirial and polar coordinates
         lon_rot, lat_rot = rot(lon, lat, lonlat=True)
         m_rot = hp.ang2pix(nside, lon_rot, lat_rot, nest=True, lonlat=True)
         return m_rot
 
 
-import time
 def infer_patch_with_rotations(model, noise_scheduler, params, date, nside=1024, jump=None, n_samples=1):
+
     npix = hp.nside2npix(nside)
     print(f"Number of pixels: {npix}")
     m = np.arange(npix)
@@ -149,6 +155,7 @@ def infer_patch_with_rotations(model, noise_scheduler, params, date, nside=1024,
     
     # add sample and metadata
     context_df['healpix_id'] = m
+    context_df['ring_id'] = hp.nest2ring(nside, m)
     context_df['m_rotated'] = m  # placeholder for rotated healpix id
     context_df.set_index('healpix_id', inplace=True)
 
@@ -159,28 +166,41 @@ def infer_patch_with_rotations(model, noise_scheduler, params, date, nside=1024,
     #t_loop_full = torch.arange(jump-1, 0, -1)
     #print(f"t_loop_jump: {t_loop_jump}, t_loop_full: {t_loop_full}")
     #t_loop = tqdm(torch.cat((t_loop_jump, t_loop_full)), desc="Denoising steps")
-    #for i in range(n_samples):
-        #cols = [f'sample_{i}'] + params['predictors']
-        #context_df[f'sample_{i}'] = np.random.randn(npix).astype(np.float32)
-    
-    #i_loop = tqdm(range(n_samples), desc="Generating samples")
     for i in range(n_samples):
-        print(f"generating sample {i}")
+        #cols = [f'sample_{i}'] + params['predictors']
+        context_df[f'sample_{i}'] = np.random.randn(npix).astype(np.float32)
+    
+    for i in range(n_samples):
         cols = [f'sample_{i}'] + params['predictors']
         t_loop = tqdm(noise_scheduler.timesteps[::jump], desc="Denoising steps")
-        #t_loop = noise_scheduler.timesteps[::jump]
-        context_df[f'sample_{i}'] = np.random.randn(npix).astype(np.float32)
         step = 0
         for t in t_loop:
-            
             context_df['m_rotated'] = do_random_rot(lon, lat)
-            
-            all_segments = []
-            fnpix = npix // 12 
-            xyf = hp.pix2xyf(nside, np.arange(fnpix), nest=True)
-            x,y = xyf[0], xyf[1]
-            #start = time.time()
+            #context_df[f'sample_{i}'] = np.random.randn(npix).astype(np.float32)
+            if step % 3 == 0:
+                #print("ring")
+                ring = context_df.loc[:, 'ring_id']
+                context_df.reset_index(inplace=True)
+                context_df.set_index('ring_id', inplace=True)
+                context_df.sort_index(inplace=True)
+                df = context_df.loc[:, cols]
+                segments = df.values.reshape(npix//64, 64, len(cols))
+                segments = np.transpose(segments, (0, 2, 1))
+                
+                ds = torch.from_numpy(segments).float()
+                ds = torch.cat((ds, torch.ones_like(ds[:, 0:1, :])), axis=1)
+                dataloader = torch.utils.data.DataLoader(ds, batch_size=4096, shuffle=False, num_workers=2)
+
+                samples = do_step_loader(model, noise_scheduler, dataloader, t, device, jump)
+                context_df.loc[:, f'sample_{i}'] = samples.flatten()
+                context_df.reset_index(inplace=True)
+                context_df.set_index('healpix_id', inplace=True)
+                step+=1
+                continue
+                
+            #print("nested")
             for face in range(12):
+                fnpix = npix // 12 
                 fpixs = np.arange(face * fnpix, (face + 1) * fnpix)
                 fpixs_rotated = context_df.loc[fpixs, 'm_rotated']
                 
@@ -191,41 +211,32 @@ def infer_patch_with_rotations(model, noise_scheduler, params, date, nside=1024,
                     segments = segment_ds(fds, 'horizontal', segment_len=64)
                 else:
                     segments = segment_ds(fds, 'vertical', segment_len=64)
-                all_segments.append(segments)
-            
-            segments = np.concatenate(all_segments, axis=0)
-            #segments = np.concatenate((hsegments, vsegments), axis=0)
-            ds = torch.from_numpy(segments).float()
-            ds = torch.cat((ds, torch.ones_like(ds[:, 0:1, :])), axis=1)
-            dataloader = torch.utils.data.DataLoader(ds, batch_size=2048, shuffle=False, num_workers=0)
-            #end = time.time()
-            #print(f"time to collocate data: {end-start}")
-            #start = time.time()
-            samples = do_step_loader(model, noise_scheduler, dataloader, t, device, jump, t_loop)
-            #end = time.time()
-            #print(f"time for denoising: {end-start}")
-            
-            fstep = samples.shape[0] // 12
-            for face in range(12):
-                fpixs = np.arange(face * fnpix, (face + 1) * fnpix)
-                fpixs_rotated = context_df.loc[fpixs, 'm_rotated']
-                xyf = hp.pix2xyf(nside, np.arange(fnpix), nest=True)
-                x,y = xyf[0], xyf[1]
+                
+                #segments = np.concatenate((hsegments, vsegments), axis=0)
+                ds = torch.from_numpy(segments).float()
+                ds = torch.cat((ds, torch.ones_like(ds[:, 0:1, :])), axis=1)
+                dataloader = torch.utils.data.DataLoader(ds, batch_size=4096, shuffle=False, num_workers=2)
+
+                samples = do_step_loader(model, noise_scheduler, dataloader, t, device, jump)
+                
                 #hsamples = samples[:samples.shape[0] // 2] 
                 #vsamples = samples[samples.shape[0] // 2:] 
-                fsamples = samples[fstep*face: fstep*(face+1)].reshape(nside, nside)
+                
+                samples = samples.reshape(nside, nside)
                 #hsamples = hsamples.reshape(nside, nside)
                 #vsamples = vsamples.reshape(nside, nside)
-                context_df.loc[fpixs_rotated, f'sample_{i}'] = fsamples[x, y] if step % 2 == 0 else fsamples[y, x]
+                context_df.loc[fpixs_rotated, f'sample_{i}'] = samples[x, y] if step % 2 == 0 else samples[y, x]
                 #context_df.loc[fpixs_rotated, f'sample_{i}'] = (hsamples[x, y] + vsamples[y, x]) / 2.0
+                t_loop.set_postfix({"face": {face}, "sample": {i}})
             step += 1
     return context_df
+
 
 import pandas as pd
 from fco2models.models import UNet2DModelWrapper, Unet2DClassifierFreeModel, UNet2DShipMix
 from fco2models.ueval import load_model
 # load baseline model
-save_path = '../models/anoms_sea/'
+save_path = '../models/mean_std/'
 model_path = 'e_200.pt'
 model_class = UNet2DModelWrapper
 model, noise_scheduler, params, losses = load_model(save_path, model_path, model_class,training_complete=True)
@@ -246,6 +257,6 @@ ddim_scheduler.set_timesteps(50)
 n=1
 df = infer_patch_with_rotations(model, ddim_scheduler, params, date, nside=nside, jump=None, n_samples=n)
 sample_cols = [f"sample_{i}" for i in range(n)]
-df['xco2'] = df['xco2'] * params['train_stds'][11] + params['train_means'][11]
+df['xco2'] = df['xco2'] * params['train_stds'][6] + params['train_means'][6]
 df[sample_cols] =df[sample_cols] * params['train_stds'][0] + params['train_means'][0] + df['xco2'].values[:, np.newaxis]
-df.to_parquet(f'{save_path}xyzrot.pq')
+df.to_parquet(f'{save_path}ring.pq')
