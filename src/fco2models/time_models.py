@@ -241,7 +241,7 @@ class TSTransformerEncoderClassiregressor(nn.Module):
 
         self.project_inp = nn.Linear(feat_dim, d_model)
         self.pos_enc = get_pos_encoder(pos_encoding)(d_model, dropout=dropout*(1.0 - freeze), max_len=max_len)
-        self.timestep_emb = TimeStepEmbedding(d_model)
+        self.timestep_emb = TimeStepEmbedding(feat_dim)
 
         if norm == 'LayerNorm':
             encoder_layer = TransformerEncoderLayer(d_model, self.n_heads, dim_feedforward, dropout*(1.0 - freeze), activation=activation)
@@ -258,7 +258,7 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         self.num_classes = num_classes
         #self.output_layer = self.build_output_module(d_model, max_len, num_classes, activation)
         self.output_layer1 = nn.Linear(d_model, 1)  # output layer for regression
-        self.output_layer2 = nn.Linear(max_len, num_classes)  # output layer for
+        #self.output_layer2 = nn.Linear(max_len, num_classes)  # output layer for
 
     def build_output_module(self, d_model, max_len, num_classes, activation):
         # output_layer = nn.Linear(d_model * max_len, num_classes)
@@ -283,11 +283,13 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         """
 
         # permute because pytorch convention for transformers is [seq_length, batch_size, feat_dim]. padding_masks [batch_size, feat_dim]
+        if t.ndim == 0:
+            t = torch.full((X.shape[0], ), t.item())
         inp = X.permute(1, 0, 2)
+        inp = self.timestep_emb(inp, t.to(X.device))
         inp = self.project_inp(inp) * math.sqrt(
             self.d_model)  # [seq_length, batch_size, d_model] project input vectors to d_model dimensional space
         inp = self.pos_enc(inp)  # add positional encoding
-        inp = self.timestep_emb(inp, torch.full((X.shape[1], ), t))
         # NOTE: logic for padding masks is reversed to comply with definition in MultiHeadAttention, TransformerEncoderLayer
         output = self.transformer_encoder(inp, src_key_padding_mask=~padding_masks)  # (seq_length, batch_size, d_model)
         output = self.act(output)  # the output transformer encoder/decoder embeddings don't include non-linearity
@@ -298,8 +300,8 @@ class TSTransformerEncoderClassiregressor(nn.Module):
         output = output * padding_masks.unsqueeze(-1)  # zero-out padding embeddings
         #output = output.reshape(output.shape[0], -1)  # (batch_size, seq_length * d_model)
         output = self.output_layer1(output)  # (batch_size, num_classes)
-        output = output.squeeze(-1)
-        output = self.act(output)  # apply activation function
-        output = self.output_layer2(output)
+        output = output.squeeze(-1)[:, :-1]
+        #output = self.act(output)  # apply activation function
+        #output = self.output_layer2(output)
 
         return output
