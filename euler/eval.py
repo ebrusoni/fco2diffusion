@@ -1,5 +1,5 @@
 from utils import add_src_and_logger
-save_dir = f'../models/cfree_mini/'
+save_dir = f'../models/anoms_sea_1d/'
 is_renkulab = True
 DATA_PATH, logging = add_src_and_logger(is_renkulab, None)
 
@@ -11,14 +11,14 @@ from torch.utils.data import DataLoader
 from diffusers import DDIMScheduler
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from scipy.stats import pearsonr
-from fco2models.models import Unet2DClassifierFreeModel, UNet2DModelWrapper
+from fco2models.models import Unet2DClassifierFreeModel, UNet2DModelWrapper, TSEncoderWrapper, UNet2DShipMix, UNet1DModelWrapper
 from fco2models.ueval import load_model
 from fco2models.utraining import prep_df, make_monthly_split, get_segments, get_context_mask, normalize_dss, get_stats_df, full_denoise
 
 # load model
 model_path = 'e_200.pt'
-model_class = Unet2DClassifierFreeModel
-model, noise_scheduler, params, losses = load_model(save_dir, model_path, model_class, training_complete=True)
+model_class = UNet1DModelWrapper
+model, noise_scheduler, params, losses = load_model(save_dir, model_path, model_class, training_complete=False)
 print("Model loaded")
 
 # load data
@@ -29,7 +29,7 @@ df['sst_anom'] = df['sst_cci'] - df['sst_clim']
 df['sss_anom'] = df['sss_cci'] - df['sss_clim']
 df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
 df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
-df['mld_anom'] = df['mld_dens_soda'] - df['mld_clim']
+df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim']
 # map expocode column to int
 expocode_map = df['expocode'].unique()
 expocode_map = {expocode: i for i, expocode in enumerate(expocode_map)}
@@ -88,10 +88,10 @@ train_ds_norm, val_ds_norm, test_ds_norm = normalize_dss([train_ds.copy(), val_d
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
 
 # CHECK THAT STATS ARE THE SAME AS IN TRAINING
-#assert np.allclose(train_stats['maxs'], params['train_maxs'], atol=1e0)
-#assert np.allclose(train_stats['mins'], params['train_mins'], atol=1e0)
-#assert np.allclose(train_stats['means'], params['train_means'], atol=1e0)
-#assert np.allclose(train_stats['stds'], params['train_stds'], atol=1e0)
+assert np.allclose(train_stats['maxs'], params['train_maxs'], atol=1e0)
+assert np.allclose(train_stats['mins'], params['train_mins'], atol=1e0)
+assert np.allclose(train_stats['means'], params['train_means'], atol=1e0)
+assert np.allclose(train_stats['stds'], params['train_stds'], atol=1e0)
 print(train_stats['maxs'])
 print(params['train_maxs'])
 
@@ -100,19 +100,20 @@ ddim_scheduler = DDIMScheduler(
     num_train_timesteps=noise_scheduler.config.num_train_timesteps,
     beta_schedule=noise_scheduler.config.beta_schedule,
     clip_sample_range=noise_scheduler.config.clip_sample_range,
+    #timestep_spacing="trailing"
     )
 ddim_scheduler.set_timesteps(50)
 
 
-n_rec=20 # number of samples to generate
-
+n_rec=50 # number of samples to generate
+eta=0
 def denoise_samples(ds_norm, model, scheduler, n_rec):
     context = ds_norm[:, 1:, :] # remove target column
     context_ds = torch.from_numpy(np.repeat(context, n_rec, axis=0)).float()
     print("context_ds shape: ", context_ds.shape)
-    context_loader = DataLoader(context_ds, batch_size=512, shuffle=False)
+    context_loader = DataLoader(context_ds, batch_size=1028, shuffle=False)
     with torch.no_grad():
-        samples_norm = full_denoise(model, scheduler, context_loader, jump=None, eta=0)
+        samples_norm = full_denoise(model, scheduler, context_loader, jump=None, eta=eta)
     return samples_norm
 
 def rescale_samples(samples_norm, params):
@@ -124,8 +125,8 @@ def rescale_samples(samples_norm, params):
         raise ValueError(f"Unknown mode: {params['mode']}")
     return samples
 
-w=0.8
-model.set_w(w)
+w=None
+#model.set_w(w)
 print("Denoise validation set")
 val_samples_norm = denoise_samples(val_ds_norm, model, ddim_scheduler, n_rec)
 val_samples = rescale_samples(val_samples_norm, params).reshape(-1, n_rec, 64)
@@ -190,6 +191,7 @@ def get_df_err_stats(df):
         'r2': r2,
         'bias': bias,
         'coverage': coverage.mean(),
+        'samples_std': df.loc[:, sample_cols].std(axis=1).mean(),
         'avg_interval_width': (high-low).mean(),
         'avg_interval_width_std': (high-low).std(),
         'max_interval_width': (high-low).max(),
@@ -218,15 +220,16 @@ results = {
     'train_err_stats': train_err_stats,
     'test_err_stats': test_err_stats,
     'w': w,
-    'n_rec':n_rec
+    'n_rec':n_rec,
+    'eta':eta
 }
 
-path_info = f"w{w}_"
+path_info = f"eta_{eta}_"
 path = save_dir + path_info
-with open(path+'error_stats.json', 'w') as f:
+with open(path+f'error_stats_{n_rec}recs.json', 'w') as f:
     json.dump(results, f, indent=4)
 
 # Save the dataframes
-val_samples_df.to_parquet(path + 'val_samples.parquet')
-train_samples_df.to_parquet(path + 'train_samples.parquet')
-test_samples_df.to_parquet(path + 'test_samples.parquet')
+val_samples_df.to_parquet(path + 'val_samples.pq')
+train_samples_df.to_parquet(path + 'train_samples.pq')
+test_samples_df.to_parquet(path + 'test_samples.pq')
