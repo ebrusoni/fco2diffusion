@@ -129,7 +129,7 @@ class MLP(nn.Module):
 class UNet2DModelWrapper(UNet2DModel):
     
     def forward(self, x, t, **kw):
-        fixed_h = 16
+        fixed_h = 32
         h = x.shape[1]
         pad = fixed_h - h
         if pad < 0:
@@ -137,7 +137,13 @@ class UNet2DModelWrapper(UNet2DModel):
         x = F.pad(x, (0, 0, 0, pad)).unsqueeze(1)     # (B, C, bins) → (B, 1, fixed_h, bins)
         pred = super().forward(x, t, **kw)[0]
         return (pred[:, 0, :1, :],)
+
+# just a wrapper for the UNet2DModel forward to adjust the input shape
+class UNet1DModelWrapper(UNet1DModel):
     
+    def forward(self, x, t, **kw):
+        pred = super().forward(x, t, **kw)[0]
+        return (pred[:, 0:1, :],)
 
 class ConvNet(nn.Module):
     def __init__(self, channels_in, input_dim=64, kernel_size=3):
@@ -362,7 +368,7 @@ class TSEncoderWrapper(TSTransformerEncoderClassiregressor):
         #t = torch.stack([t] * s, dim=1).unsqueeze(1) # this is a time vector of shape (B, 1, S)
         #x = torch.cat([x, t], dim=1)  # concatenate time as a feature
 
-        out = super().forward(x.permute(0, 2, 1), t, torch.ones((b, s)).bool().to(x.device), **kwargs) # (B, S, C) → (B, C, S)
+        out = super().forward(x.permute(0, 2, 1), t, torch.ones((b, s + 1)).bool().to(x.device), **kwargs) # (B, S, C) → (B, C, S)
 
         return (out.unsqueeze(1), None) # return shape (B, 1, S)
 
