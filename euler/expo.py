@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import pandas as pd
+from diffusers import DDIMScheduler
 from utils import add_src_and_logger
 save_dir = None
 is_renkulab = True
@@ -24,7 +25,7 @@ def diffusion_step(model, noise_scheduler, x, t, jump):
     sample = x[:, 0:1, :]  # Assuming the first channel is the sample
     with torch.no_grad():
         residual = model(x, t, return_dict=False)[0]
-    output_scheduler = noise_scheduler.step(residual, t, sample)
+    output_scheduler = noise_scheduler.step(residual, t, sample, eta=0)
     if jump is not None:
         x_0 = output_scheduler.pred_original_sample
         if t < jump:
@@ -56,8 +57,6 @@ def step_and_collocate(model, t, dataloader, noise_scheduler, n_recs, expo_ids, 
         rec_dfs.append(rec_df)
     
     sample_df = pd.concat(rec_dfs, axis=1)
-    # print(f"Sample DataFrame shape: {sample_df.shape}")
-    # print(f"Sample DataFrame Nans: {sample_df.isna().sum()}")
     return sample_df
 
 from fco2models.ueval import get_expocode_map
@@ -67,7 +66,6 @@ def init_denoise_df(df, n_recs=10):
     """
     rec_cols = [f'rec_{i}' for i in range(n_recs)]
     df.loc[:, rec_cols] = np.random.randn(len(df), n_recs)  # Random values for recs
-    #df.loc[:, 'window'] = df.groupby('expocode').cumcount()  # Create a window column
     df.loc[:, 'expocode_id'] = df['expocode'].map(get_expocode_map(df))
     df = reflect_dataframe_edges(df)
     return df
@@ -86,7 +84,6 @@ def reflect_dataframe_edges(df: pd.DataFrame, group_col: str = "expocode", n: in
 
     return df.groupby(group_col, group_keys=False).apply(reflect_group).reset_index(drop=True)
 
-from fco2models.utraining import get_segments
 from numpy.lib.stride_tricks import sliding_window_view
 def get_segments_fast(df, cols, num_windows=64, step=64, offset=0):
     """
@@ -116,7 +113,6 @@ def segment_rec_df(df, predictors, n_recs, segment_len=64):
     segments = np.concatenate(segments, axis=0)
     return segments
 
-
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 import time
@@ -125,6 +121,14 @@ def denoise_df(df, model_info, n_recs, jump=20):
     predictors = params['predictors']
     model = model_info['model']
     noise_scheduler = model_info['noise_scheduler']
+    # Use ddim for inference
+    ddim_scheduler = DDIMScheduler(
+        num_train_timesteps=noise_scheduler.config.num_train_timesteps,
+        beta_schedule=noise_scheduler.config.beta_schedule,
+        clip_sample_range=noise_scheduler.config.clip_sample_range,
+        #timestep_spacing="trailing"
+       )
+    ddim_scheduler.set_timesteps(50)
    
     stats = {
         'means': params['train_means'],
@@ -137,7 +141,7 @@ def denoise_df(df, model_info, n_recs, jump=20):
     denoise_df = init_denoise_df(df, n_recs=n_recs)
     rec_cols = [f'rec_{i}' for i in range(n_recs)]
 
-    t_loop = tqdm(noise_scheduler.timesteps[::jump], desc="Denoising steps")
+    t_loop = tqdm(ddim_scheduler.timesteps[::jump], desc="Denoising steps")
     model.eval()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
@@ -149,18 +153,13 @@ def denoise_df(df, model_info, n_recs, jump=20):
         windows = ds[:, -2, :].astype(int)
         recs = ds[:, -1, :].astype(int)
         end = time.time()
-        #print(f"time for creating ds: {end-start}")
         model_input = np.concatenate([ds[:, :-3, :], np.ones_like(ds[:, 0:1, :])], axis=1)
         model_input = torch.from_numpy(model_input).float().to(model.device)
         dataloader = DataLoader(model_input, batch_size=1024, shuffle=False)
-        sample_df = step_and_collocate(model, t, dataloader, noise_scheduler, n_recs, expo_ids, windows, recs)
+        sample_df = step_and_collocate(model, t, dataloader, ddim_scheduler, n_recs, expo_ids, windows, recs)
 
         denoise_df.set_index(['expocode_id', 'window_id'], inplace=True)
-        #nan_mask = sample_df[rec_cols].isna()
-        #sample_df = sample_df.loc[~nan_mask, :]
-        #denoise_df.loc[:, rec_cols] = np.nan
         denoise_df.loc[sample_df.index, rec_cols] = denoise_df.loc[sample_df.index, rec_cols].where(sample_df[rec_cols].isna(), sample_df[rec_cols])
-        #denoise_df.loc[sample_df.index, rec_cols] = sample_df[rec_cols]
         denoise_df.reset_index(inplace=True)
     
     return denoise_df
@@ -169,17 +168,15 @@ import pandas as pd
 import numpy as np
 from fco2models.utraining import prep_df, make_monthly_split
 from fco2models.ueval import rescale
-from fco2models.models import UNet2DModelWrapper, MLPNaiveEnsemble
+from fco2models.models import UNet2DModelWrapper, MLPNaiveEnsemble, UNet1DModelWrapper
 from fco2models.ueval import load_models
 from fco2models.umeanest import MLPModel
 
-save_path = '../models/anoms_sea/'
+save_path = '../models/anoms_sea_1d/'
 model_dict = {
-    'xco2_100': [save_path, 'e_200.pt', UNet2DModelWrapper],
-    #'sota_ensemble': ['../models/sota_ensemble/', 'e_30.pt', MLPNaiveEnsemble],
+    'dm': [save_path, 'e_240.pt', UNet1DModelWrapper],
 }
 models = load_models(model_dict)
-#DATA_PATH = "../data/training_data/"
 df = pd.read_parquet(DATA_PATH + "SOCAT_1982_2021_grouped_colloc_augm_bin.pq", engine='pyarrow')
 df = prep_df(df, bound=True)[0]
 df['sst_clim'] += 273.15
@@ -194,14 +191,13 @@ df_test = df.loc[df.expocode.map(mask_test), :]
 
 #expocodes = ["AG5W20141113"]
 expocodes = df_val.expocode.unique()
-n_recs = 10
+n_recs = 20
 rec_cols = [f'rec_{i}' for i in range(n_recs)]
-model_info = models['xco2_100']
+model_info = models['dm']
 params = model_info['params']
-ds = denoise_df(df_val[df_val.expocode.isin(expocodes)].copy(), model_info, n_recs=n_recs)
-#ds = denoise_df(df_val, model_info, n_recs=n_recs)
+ds = denoise_df(df_val[df_val.expocode.isin(expocodes)].copy(), model_info, n_recs=n_recs, jump=None)
 ds.set_index('index', inplace=True)
 ds.loc[:, rec_cols] = rescale(ds.loc[:, rec_cols].values.reshape(-1, 1), params, params['mode']).reshape(-1, n_recs)
 
 ds = ds.groupby("expocode").apply(lambda df: df.sort_values(by='window_id').iloc[128:-128])
-ds.to_parquet(f'{save_path}cruise.pq')
+ds.to_parquet(f'{save_path}val_predictions.pq')
