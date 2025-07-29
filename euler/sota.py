@@ -1,9 +1,7 @@
-
-import fco2models.umeanest
 from utils import add_src_and_logger
 
-save_dir = f'../models/sota_ensemble_anoms/'
-DATA_PATH, logger = add_src_and_logger(False, save_dir)
+save_dir = f'../models/sota_anoms64/'
+DATA_PATH, logger = add_src_and_logger(True, save_dir)
 
 import pandas as pd 
 import numpy as np
@@ -19,10 +17,10 @@ from diffusers.optimization import get_cosine_schedule_with_warmup, get_constant
 import json
 import logging
 
-from fco2models.utraining import prep_df, normalize_dss, save_losses_and_png, get_stats
+from fco2models.utraining import prep_df, normalize_dss, save_losses_and_png, get_stats, make_monthly_split
 from fco2models.umeanest import train_mean_estimator, MLPModel, train_pointwise_mlp
 from fco2models.models import MLPEnsemble, MLPNaiveEnsemble
-import fco2models
+#import fco2models
 
 np.random.seed(1)
 torch.manual_seed(0)
@@ -60,12 +58,12 @@ def add_seamask(df, masks):
     return df
 
 dfs = []
-xco2_mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
+xco2_mbl = xr.open_dataarray(DATA_PATH+'atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
 co2_clim = xr.open_zarr('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/co2_clim/prior_dfco2-lgbm-ens_avg-t46y720x1440.zarr/')
-masks = xr.open_dataset("../data/masks/RECCAP2_masks.nc")
+masks = xr.open_dataset(DATA_PATH+"masks/RECCAP2_masks.nc")
 for year in range(1982, 2022):
     print(f"Processing year: {year}")
-    df = pd.read_parquet(f'../data/SOCATv2024-1d_005deg-colloc-r20250224/SOCATv2024_1d_005deg_collocated_{year}-r20250224.pq', engine='pyarrow')
+    df = pd.read_parquet(f'{DATA_PATH}SOCATv2024-1d_005deg-colloc-r20250224/SOCATv2024_1d_005deg_collocated_{year}-r20250224.pq', engine='pyarrow')
     print(f"Loaded data for year {year}, shape: {df.shape}")
     #add day_of_year column
     df.reset_index(inplace=True)
@@ -101,15 +99,21 @@ df['sst_anom'] = df['sst_cci'] - df['sst_clim']
 df['sss_anom'] = df['sss_cci'] - df['sss_clim']
 df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
 df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
-df['mld_anom'] = df['mld_dens_soda'] - df['mld_clim']
+df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim']
 
-test_months = pd.date_range('1982-01', '2022-01', freq='7MS').values.astype('datetime64[M]')
-months = df.time_1d.values.astype('datetime64[M]')
-mask_test = np.isin(months, test_months)
+mask_train, mask_val, mask_test = make_monthly_split(df)
+df_train = df.loc[df.expocode.map(mask_train), :]
+df_val = df.loc[df.expocode.map(mask_val), :]
+df_test = df.loc[df.expocode.map(mask_test), :]
 
-df_train = df[~mask_test]
-df_val = df[mask_test]
-logger.info(f"Removed all points not in seamask in validation set")
+#test_months = pd.date_range('1982-01', '2022-01', freq='7MS').values.astype('datetime64[M]')
+#months = df.time_1d.values.astype('datetime64[M]')
+#mask_test = np.isin(months, test_months)
+
+#df_train = df[~mask_test]
+#df_val = df[mask_test]
+logger.info(f"Removed all points not in seamask in validation and train set")
+df_train = df_train[df_train.seamask == 1]
 df_val = df_val[df_val.seamask == 1]
 
 # drop nan rows
@@ -128,12 +132,12 @@ df_val = df_val[[target] + predictors].dropna()
 train_ds = df_train.values
 val_ds = df_val.values
 
-import lightgbm as lgb
-from sklearn import metrics
-y_train = train_ds[:, 0]
-X_train = train_ds[:, 1:]
-y_val = val_ds[:, 0]
-X_val = val_ds[:, 1:]
+#import lightgbm as lgb
+#from sklearn import metrics
+#y_train = train_ds[:, 0]
+#X_train = train_ds[:, 1:]
+#y_val = val_ds[:, 0]
+#X_val = val_ds[:, 1:]
 
 
 # model = lgb.LGBMRegressor(
@@ -189,7 +193,7 @@ val_dataloader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=Fal
     
 model_params_mlp = {
     "input_dim": train_ds.shape[1] - 1,
-    "hidden_dim": 128,
+    "hidden_dim": 64,
     "output_dim": 1,
 }
 
@@ -204,7 +208,7 @@ def count_trainable_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 print(f"Number of trainable parameters: {count_trainable_parameters(model)}")
-num_epochs = 30
+num_epochs = 50
 optimizer = optim.Adam(model.parameters(), lr=lr)
 
 lr_params = {}
@@ -298,8 +302,4 @@ save_losses_and_png(train_losses_old, val_losses_old, save_dir)
 logging.info("Completed training")
 logging.info("Training losses: %s", train_losses)
 logging.info("Validation losses: %s", val_losses)
-
-
-
-
 
