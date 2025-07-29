@@ -99,12 +99,12 @@ VARIABLES = {
 def get_day_data(date, save_path):
 
     dict_catalog = lambda date: {
-        'globcolour': f'chl_globcolour/{date.strftime('%Y')}/{date.strftime("%Y%m%d")}_cmems_obs-oc_glo_bgc-plankton_my_l4-gapfree-multi-4km_P1D.nc',
+        'globcolour': f'chl_globcolour/{date.strftime("%Y")}/{date.strftime("%Y%m%d")}_cmems_obs-oc_glo_bgc-plankton_my_l4-gapfree-multi-4km_P1D.nc',
         'soda': f'soda/soda3.15.2_5dy_ocean_reg_{date.strftime("%Y_%m_%d")}.nc',
-        'cmems': f'ssh_duacs_cmems/{date.strftime('%Y')}/cmems_obs-sl_glo_phy-ssh_my_allsat-l4-duacs-0.125deg_P1D_{date.strftime("%Y%m%d")}.nc',
-        'sss_cci': f'sss_cci/{date.strftime('%Y')}/ESACCI-SEASURFACESALINITY-L4-SSS-GLOBAL-MERGED_OI_7DAY_RUNNINGMEAN_DAILY_0.25deg-{date.strftime("%Y%m%d")}-fv4.41.nc',
-        'sss_multiobs': f'sss_multiobs/{date.strftime('%Y')}/dataset-sss-ssd-nrt-daily_{date.strftime("%Y%m%d")}T1200Z.nc',
-        'sst_cci': f'sst_cci_cdr/{date.strftime('%Y')}/{date.strftime("%Y%m%d")}120000-ESACCI-L4_GHRSST-SSTdepth-OSTIA-GLOB_ICDR3.0-v02.0-fv01.0.nc'
+        'cmems': f'ssh_duacs_cmems/{date.strftime("%Y")}/cmems_obs-sl_glo_phy-ssh_my_allsat-l4-duacs-0.125deg_P1D_{date.strftime("%Y%m%d")}.nc',
+        'sss_cci': f'sss_cci/{date.strftime("%Y")}/ESACCI-SEASURFACESALINITY-L4-SSS-GLOBAL-MERGED_OI_7DAY_RUNNINGMEAN_DAILY_0.25deg-{date.strftime("%Y%m%d")}-fv4.41.nc',
+        'sss_multiobs': f'sss_multiobs/{date.strftime("%Y")}/dataset-sss-ssd-nrt-daily_{date.strftime("%Y%m%d")}T1200Z.nc',
+        'sst_cci': f'sst_cci_cdr/{date.strftime("%Y")}/{date.strftime("%Y%m%d")}120000-ESACCI-L4_GHRSST-SSTdepth-OSTIA-GLOB_ICDR3.0-v02.0-fv01.0.nc'
     }
 
     # find the closest later date with all files reachable
@@ -178,6 +178,3 @@ def collocate(df, date, save_path, dss=None, verbose=True):
     df_collocated = pd.concat(df_list, axis=1)
 
     return df_collocated
-
-
-    
