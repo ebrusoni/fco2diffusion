@@ -84,14 +84,18 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
             # Update the model parameters with the optimizer
             optimizer.step()
             
+            # Update the learning rate
+            lr_scheduler.step()
+            
+            
             #update loss in progress bar
             progress_bar.set_postfix({"Loss": loss.item()})
             # batch.detach()
         train_losses.append(epoch_loss / len(train_dataloader))
         print(f"Epoch {epoch+1} Loss: {epoch_loss / len(train_dataloader):.6f}")
         check_gradients(model)
-        # Update the learning rate
-        lr_scheduler.step()
+        print(f"Learning rate: {lr_scheduler.get_last_lr()}")
+
 
         # print validation loss
         model.eval()
@@ -181,8 +185,9 @@ def full_denoise(model, noise_scheduler, context_loader, jump=None, pos_encoding
             sample_context[:, 0:1, :] = sample
             # Get model pred
             with torch.no_grad():
-                class_labels = None if pos_encodings_start is None else pos_to_timestep(pos_encodings, noise_scheduler)
-                residual = model(sample_context, t, return_dict=False, class_labels=class_labels)[0]
+                #class_labels = None if pos_encodings_start is None else pos_to_timestep(pos_encodings, noise_scheduler)
+                #print(t)
+                residual = model(sample_context, t, return_dict=False)[0]
 
             output_scheduler = noise_scheduler.step(residual, t, sample, eta=eta)
             if jump is not None:
@@ -384,18 +389,20 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_lo
         if 'xco2' not in df.columns:
             if with_log:
                 logger.info("adding xco2 data")
-            #xco2_mbl = xr.open_dataarray('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/xco2mbl-timeP7D_1D-lat25km.nc')
-            xco2_mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
+            xco2_mbl = xr.open_dataarray('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/xco2mbl-timeP7D_1D-lat25km.nc')
+            #xco2_mbl = xr.open_dataarray('../data/atmco2/xco2mbl-timeP7D_1D-lat25km.nc')
             df = add_xco2(df, xco2_mbl)
         
         if 'seamask' not in df.columns:
             if with_log:
                 logger.info("adding seamask data")
-            masks = xr.open_dataset('../data/masks/RECCAP2_masks.nc')
+            masks = xr.open_dataset('/home/jovyan/work/datapolybox/masks/RECCAP2_masks.nc')
             # masks = xr.open_dataset("../data/masks/RECCAP2_masks.nc")
             selection = df[['lat', 'lon']].to_xarray()
             df['seamask'] = masks.seamask.sel(selection, method='nearest')
-        
+            
+        logger.info("set fco2 values outside seamask to NaN")
+        df.loc[df.seamask==0, 'fco2rec_uatm'] = np.nan
         if add_clim:
             if with_log:
                 logger.info("adding climatology data")
@@ -716,7 +723,8 @@ def get_context_mask(dss, logger=None):
         context_ds = ds[:, 1:, :]
         not_nan_mask = np.isnan(context_ds).any(axis=2)
         not_nan_mask = np.sum(not_nan_mask, axis=1) == 0
-        masks.append(not_nan_mask)
+        all_fco2_nans = ~np.isnan(ds[:, 0, :]).all(axis=1)
+        masks.append(not_nan_mask & all_fco2_nans)
         logger.info(f"Number of samples after filtering: {np.sum(not_nan_mask)}")
     return masks
 
