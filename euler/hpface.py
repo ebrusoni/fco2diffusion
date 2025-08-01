@@ -155,48 +155,96 @@ def infer_patch(model, noise_scheduler, params, patch_ix, patch_size, date, nsid
     model.to(device)
     step = 0
     t_loop = tqdm(noise_scheduler.timesteps[::jump], desc="Denoising steps")
+
+    # ------------------------------------------------------------------
+    # pre-compute some constants once, *outside* the time loop ----------
+    cols_per_samp = 1 + len(pred_cols)                       # sample-col + predictors
+    n_seg          = patch_size // segment_len               # segments per sample
+    order          = np.argsort(ring_pix.flatten())            # ring permutation
+    inverse        = np.argsort(order)
+    axis_sample    = 2                                       # where the n_samples live
+    # ------------------------------------------------------------------
     
     for t in t_loop:
-        all_segments = []
-        random_offsets = [np.random.randint(-60, 60) for i in range(n_samples)]
-        for i in range(n_samples):
-            colixs = np.concatenate((np.array([i]), pred_cols))
-            #print(f"colixs: {colixs}")
-            #sample_context_ds = samples_context_ds[:, :, colixs]
-            if step % 3 == 0:
-                ring_ds = sample_context_ds[segment_len:-segment_len, segment_len:-segment_len, colixs].reshape(patch_size, -1)
-                #ring_pix = ring_ds[:, -2].flatten()
-                order = np.argsort(ring_pix.flatten())
-                segments = ring_ds[order].reshape(patch_size//segment_len, segment_len, -1)
-                segments = np.swapaxes(segments, 1, 2)
-            elif step % 2 == 0:
-                segments = segment_sample(sample_context_ds[:, :, colixs], 'horizontal', segment_len=segment_len, random_offset=random_offsets[i])
-            else:
-                segments = segment_sample(sample_context_ds[:, :, colixs], 'vertical', segment_len=segment_len, random_offset=random_offsets[i])
-
-            all_segments.append(segments)
+        # ■■■■■■■■■■■■■■■■■■■■  build SEGMENTS for *all* samples at once  ■■■■■■■■■■■■■■■■■■
+        random_offset = np.random.randint(-60, 60)            # one offset shared by all
+    
+        if step % 3 == 0:                     # ── ring mode (every 3rd step) ──
+            # core patch without the padding, shape (side, side, ·)
+            core = sample_context_ds[segment_len:-segment_len,
+                                     segment_len:-segment_len, :]
+            # predictors, same for every sample
+            pred_part = core[:, :, pred_cols]                 # (side, side, p)
+            # sample columns collected in an extra axis
+            samp_part = core[:, :, :n_samples]                # (side, side, n_samples)
+    
+            # stack  →  (n_samples, side, side, cols_per_samp)
+            data = np.concatenate((samp_part.transpose(2,0,1)[..., None],    # (n_samples, side, side, 1)
+                                   np.broadcast_to(pred_part,   # (1, side, side, p)
+                                                  (n_samples, side, side,
+                                                   len(pred_cols)))),
+                                  axis=3)
+    
+            # flatten spatially, apply ring ordering
+            ring_ds = data.reshape(n_samples, patch_size, cols_per_samp)
+            ring_ds = ring_ds[:, order, :]
+    
+            # cut into 64-pixel strips and move axes → (n_samples·n_seg, cols, 64)
+            segments = (ring_ds
+                        .reshape(n_samples, n_seg, segment_len, cols_per_samp)
+                        .transpose(0, 1, 3, 2)
+                        .reshape(-1, cols_per_samp, segment_len))
             
-        segments = np.concatenate(all_segments, axis=0)
-        #print(segments.shape)
-        ds = torch.from_numpy(segments).to(device).float()
-        dataloader = torch.utils.data.DataLoader(ds, batch_size=4096, shuffle=False)
-
-        all_samples = do_step_loader(model, noise_scheduler, dataloader, t, device, jump)
-        
-        for i in range(n_samples):
-            offset = random_offsets[i] + segment_len
-            samples = all_samples[i * (patch_size // segment_len): (i + 1) * (patch_size // segment_len)]
-            if step % 3 == 0:
-                samples_ordered = samples.flatten()[np.argsort(order)]
-                sample_context_ds[segment_len:-segment_len, segment_len:-segment_len, i] = samples_ordered.reshape(side, side)
-            elif step % 2 == 0:
-                samples = samples.reshape(side, side)
-                sample_context_ds[segment_len:-segment_len, offset:offset + side, i] = samples
-            else:
-                samples = samples.reshape(side, side).T
-                sample_context_ds[offset:offset + side, segment_len:-segment_len, i] = samples
-
-        #samples_context_ds[:, :, i] = sample_context_ds[:, :, 0]
+            #print(f"segments shape: {segments.shape}")
+    
+        else:                                # ── horizontal / vertical ──
+            # create (n_samples, padded, padded, cols_per_samp)
+            samp_pad = sample_context_ds[:, :, :n_samples].transpose(2, 0, 1)  # (n_s, P, P)
+            pred_pad = sample_context_ds[:, :, pred_cols][None, ...]           # (1, P, P, p)
+            data     = np.concatenate((samp_pad[..., None],                    # (n_s, P, P, 1)
+                                       np.broadcast_to(pred_pad,
+                                                      (n_samples, *pred_pad.shape[1:]))),
+                                      axis=3)
+    
+            if step % 2:                               # vertical
+                data = data.transpose(0, 2, 1, 3)      # swap x ↔ y for all samples
+    
+            offset   = segment_len + random_offset
+            side     = padded_side - 2 * segment_len
+            sliced   = data[:, segment_len:-segment_len,
+                              offset:offset + side, :]  # (n_s, side, side, cols)
+    
+            segments = (sliced
+                        .reshape(n_samples, n_seg, segment_len, cols_per_samp)
+                        .transpose(0, 1, 3, 2)
+                        .reshape(-1, cols_per_samp, segment_len))
+    
+        # ■■■■■■■■■■■■■■■■■■■■■  SEND THROUGH THE MODEL (unchanged)  ■■■■■■■■■■■■■■■■■■■■■■■
+        ds        = torch.from_numpy(segments).to(device).float()
+        #ds        = torch.cat((ds, torch.ones_like(ds[:, :1, :])), axis=1)
+        dataloader = torch.utils.data.DataLoader(ds, batch_size=4096,
+                                                 shuffle=False)
+        all_samples = do_step_loader(model, noise_scheduler, dataloader,
+                                     t, device, jump)           # 1-D tensor
+    
+        # ■■■■■■■■■■■■■■■■■■■■  scatter the predictions back  ■■■■■■■■■■■■■■■■■■■■■■■■■■
+        # reshape back to (n_samples, n_seg, 64) → (n_samples, patch_size)
+        preds = all_samples.reshape(n_samples, n_seg, segment_len).reshape(
+                n_samples, patch_size)
+    
+        if step % 3 == 0:                         # ring case
+            imgs = preds[:, inverse].reshape(n_samples, side, side)
+            sample_context_ds[segment_len:-segment_len,
+                              segment_len:-segment_len, :n_samples] = imgs.transpose(1, 2, 0)
+        elif step % 2 == 0:                       # horizontal
+            imgs = preds.reshape(n_samples, side, side)
+            sample_context_ds[segment_len:-segment_len,
+                              offset:offset + side, :n_samples] = imgs.transpose(1, 2, 0)
+        else:                                     # vertical
+            imgs = preds.reshape(n_samples, side, side).transpose(0, 2, 1)
+            sample_context_ds[offset:offset + side,
+                              segment_len:-segment_len, :n_samples] = imgs.transpose(1, 2, 0)
+    
         step += 1
     
     # remove padding from result
@@ -225,16 +273,16 @@ ddim_scheduler = DDIMScheduler(
     #timestep_spacing="trailing"
     )
 ddim_scheduler.set_timesteps(50)
-n=10
+n=20
 nside = 2**10
 npix = hp.nside2npix(nside)
 face_pixs = npix//12
-num_subfaces = 4 # number of subfaces should a power of 4
+num_subfaces = 1 # number of subfaces should a power of 4
 patch_size = face_pixs // num_subfaces
 #print(f"Number of patches: {n_patches}")
 print(f"Patch size: {patch_size}")
 
-patch_ixs = range(31,32)
+patch_ixs = range(7,8)
 samples = []
 for patch_ix in patch_ixs:
     sample = infer_patch(model, ddim_scheduler, params, patch_ix, patch_size, date, nside=nside, dss=None, jump=None, n_samples=n)
