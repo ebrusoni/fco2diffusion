@@ -65,29 +65,34 @@ def _load_netcdf(path, vars_tuple: tuple):
 BASE_URL = "https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/"
 VARIABLES = {
     'soda': {
-        'temp': 'temp_soda',
+        #'temp': 'temp_soda',
         'salt': 'salt_soda',
         'mlp': 'mld_dens_soda',
-        'xt_ocean': 'lon',
-        'yt_ocean': 'lat',
-        'st_ocean': 'depth'},
-    'globcolour': {
+        #'xt_ocean': 'lon',
+        #'yt_ocean': 'lat',
+        #'st_ocean': 'depth'
+           },
+    'chl': {
         'CHL': 'chl_globcolour',
-        'CHL_uncertainty': 'chl_globcolour_uncert',
-        'flags': 'chl_globcolour_flags'},
+#        'CHL_uncertainty': 'chl_globcolour_uncert',
+#        'flags': 'chl_globcolour_flags'
+          },
     'cmems': {
         'adt': 'ssh_adt',
         'sla': 'ssh_sla',
-        'latitude': 'lat',
-        'longitude': 'lon'},
+        #'latitude': 'lat',
+        #'longitude': 'lon'
+        },
     'sst_cci': {
         'analysed_sst': 'sst_cci',
-        'analysed_sst_uncertainty': 'sst_cci_uncertainty',
-        'sea_ice_fraction': 'ice_cci'},
+        #'analysed_sst_uncertainty': 'sst_cci_uncertainty',
+        #'sea_ice_fraction': 'ice_cci'
+        },
     'sss_cci': {
         'sss': 'sss_cci', 
-        'sss_random_error': 
-        'sss_cci_random_error'},
+        #'sss_random_error': 
+        #'sss_cci_random_error'
+        },
     'sss_multiobs': {
         'sos': 'sss_multiobs',
         'sos_error': 'sss_multiobs_error',
@@ -95,11 +100,31 @@ VARIABLES = {
         'longitude': 'lon'}
         }
 
+def get_zarr_data(year='2022'):
+    dict_catalog = {
+        'chl': 'chl_globcolour.zarr',
+        'soda': 'soda.zarr',
+        'cmems': 'ssh_duacs_cmems.zarr',
+        'sss_cci': 'sss_cci.zarr',
+        #'sss_multiobs': 'sss_multiobs.zarr',
+        'sst_cci': 'sst_cci_cdr.zarr'
+    }
+    dss = {}
+    for key, path in dict_catalog.items():
+        #print(key)
+        varnames_map = VARIABLES[key]
+        full_path = os.path.join(BASE_URL, path)
+        ds = xr.open_zarr(full_path, group=year)
+        ds = ds[list(varnames_map)].rename(**varnames_map)
+        dss[key] = ds
+    
+    return dss
+
 #def collocate(df, date, save_path):
 def get_day_data(date, save_path):
 
     dict_catalog = lambda date: {
-        'globcolour': f'chl_globcolour/{date.strftime("%Y")}/{date.strftime("%Y%m%d")}_cmems_obs-oc_glo_bgc-plankton_my_l4-gapfree-multi-4km_P1D.nc',
+        'chl': f'chl_globcolour/{date.strftime("%Y")}/{date.strftime("%Y%m%d")}_cmems_obs-oc_glo_bgc-plankton_my_l4-gapfree-multi-4km_P1D.nc',
         'soda': f'soda/soda3.15.2_5dy_ocean_reg_{date.strftime("%Y_%m_%d")}.nc',
         'cmems': f'ssh_duacs_cmems/{date.strftime("%Y")}/cmems_obs-sl_glo_phy-ssh_my_allsat-l4-duacs-0.125deg_P1D_{date.strftime("%Y%m%d")}.nc',
         'sss_cci': f'sss_cci/{date.strftime("%Y")}/ESACCI-SEASURFACESALINITY-L4-SSS-GLOBAL-MERGED_OI_7DAY_RUNNINGMEAN_DAILY_0.25deg-{date.strftime("%Y%m%d")}-fv4.41.nc',
