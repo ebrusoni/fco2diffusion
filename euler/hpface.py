@@ -24,10 +24,11 @@ def plot_patch(patch_ix, patch_size, data, nside=1024):
     m[patch_pix] = data
     hp.mollview(m, title=f"Patch {patch_ix}", nest=True)
 
-from fco2dataset.ucollocate import get_day_data, collocate
+from fco2dataset.ucollocate import get_day_data, collocate, get_zarr_data
 def get_day_dataset(date):
     # get global satellite data for a given date
-    dss = get_day_data(date, save_path='../data/inference/gridded')
+    # dss = get_day_data(date, save_path='../data/inference/gridded')
+    dss = get_zarr_data()
     return dss
 
 def collocate_coords(df, dss, date):
@@ -82,6 +83,8 @@ def get_patch_ds(params, patch_ix, patch_size, date, nside, dss=None):
     coords['time_1d'] = date
     # collocate the data
     context_df = collocate_coords(coords, dss, date)
+    #print(context_df.columns)
+    #print(context_df.shape)
     context_df['lon'] = (context_df['lon'] + 180) % 360 - 180
     context_df = prep_df(context_df, with_target=False, with_log=False)[0]
     context_df['sst_clim'] += 273.15
@@ -154,8 +157,8 @@ def infer_patch(model, noise_scheduler, params, patch_ix, patch_size, date, nsid
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     step = 0
-    t_loop = tqdm(noise_scheduler.timesteps[::jump], desc="Denoising steps")
-
+    #t_loop = tqdm(noise_scheduler.timesteps[::jump], desc="Denoising steps")
+    t_loop = noise_scheduler.timesteps[::jump]
     # ------------------------------------------------------------------
     # pre-compute some constants once, *outside* the time loop ----------
     cols_per_samp = 1 + len(pred_cols)                       # sample-col + predictors
@@ -273,38 +276,50 @@ ddim_scheduler = DDIMScheduler(
     #timestep_spacing="trailing"
     )
 ddim_scheduler.set_timesteps(50)
-n=20
+n=5
 nside = 2**10
 npix = hp.nside2npix(nside)
 face_pixs = npix//12
-num_subfaces = 1 # number of subfaces should a power of 4
+num_subfaces = 4 # number of subfaces should a power of 4
 patch_size = face_pixs // num_subfaces
 #print(f"Number of patches: {n_patches}")
 print(f"Patch size: {patch_size}")
 
-patch_ixs = range(7,8)
+patch_ix = 31
 samples = []
-for patch_ix in patch_ixs:
+date_range = pd.date_range(start='2022-01-01', end='2022-01-07', freq='D')
+dfs = []
+date_range_loop = tqdm(date_range, desc="Processing dates")
+for date in date_range_loop:
     sample = infer_patch(model, ddim_scheduler, params, patch_ix, patch_size, date, nside=nside, dss=None, jump=None, n_samples=n)
-    samples.append(sample)
+    lat = sample[:, :, -4]
+    lon = sample[:, :, -3]
+    patch_pix = sample[:, :, -2]
+    ring_pix = sample[:, :, -1]
+    
+    # Base DataFrame with index
+    index = pd.MultiIndex.from_arrays([
+        patch_pix.flatten().astype(int),
+        lat.flatten(),
+        lon.flatten()
+    ], names=['patch_pix', 'lat', 'lon'])
+    
+    # Prepare sample columns
+    sample_cols = [f"sample_{i}" for i in range(n)]
+    sample_data = sample[:, :, :n].reshape(-1, n)
+    
+    # De-normalize xco2 and apply correction
+    xco2_ix = params['predictors'].index('xco2') + 1
+    xco2 = sample[:, :, xco2_ix].flatten()
+    xco2 = xco2 * params['train_stds'][xco2_ix] + params['train_means'][xco2_ix]
+    sample_data = sample_data * params['train_stds'][0] + params['train_means'][0] + xco2[:, np.newaxis]
+    
+    # Create MultiIndex columns (date, sample_x)
+    columns = pd.MultiIndex.from_product([[date], sample_cols])
+    
+    # Build DataFrame and append
+    df = pd.DataFrame(sample_data, index=index, columns=columns)
+    dfs.append(df)
+    date_range_loop.set_postfix(date=date.strftime('%Y-%m-%d'), shape=df.shape)
 
-sample = np.concatenate(samples, axis=0)
-lat = sample[:, :, -4]
-lon = sample[:, :, -3]
-patch_pix = sample[:, :, -2]
-ring_pix = sample[:, :, -1]
-df = pd.DataFrame({
-    'lat': lat.flatten(),
-    'lon': lon.flatten(),
-    'patch_pix': patch_pix.flatten().astype(int),
-    'ring_pix': ring_pix.flatten().astype(int),
-})
-for i, col in enumerate(params['predictors']):
-    df[col] = sample[:, :, i + 1].flatten()
-
-sample_cols = [f"sample_{i}" for i in range(n)]
-df[sample_cols] = sample[:, :, :n].reshape(-1, n)
-df['xco2'] = df['xco2'] * params['train_stds'][11] + params['train_means'][11]
-df[sample_cols] =df[sample_cols] * params['train_stds'][0] + params['train_means'][0] + df['xco2'].values[:, np.newaxis]
-df.set_index('patch_pix', inplace=True)
-df.to_parquet(f'{save_path}minipatch.pq')
+pd.concat(dfs, axis=1).to_parquet(f'{save_path}papagayo.pq')
