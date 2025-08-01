@@ -200,28 +200,45 @@ def infer_patch(model, noise_scheduler, params, patch_ix, patch_size, date, nsid
             
             #print(f"segments shape: {segments.shape}")
     
-        else:                                # ── horizontal / vertical ──
-            # create (n_samples, padded, padded, cols_per_samp)
-            samp_pad = sample_context_ds[:, :, :n_samples].transpose(2, 0, 1)  # (n_s, P, P)
-            pred_pad = sample_context_ds[:, :, pred_cols][None, ...]           # (1, P, P, p)
-            data     = np.concatenate((samp_pad[..., None],                    # (n_s, P, P, 1)
+        else:
+            # one offset per sample   (n_samples,)
+            offsets = segment_len + np.random.randint(-60, 60, size=n_samples)
+        
+            # bring data into shape (n_samples, P, P, cols_per_samp)
+            samp_pad = sample_context_ds[:, :, :n_samples].transpose(2, 0, 1)     # (n_s, P, P)
+            pred_pad = sample_context_ds[:, :, pred_cols][None, ...]              # (1, P, P, p)
+            data     = np.concatenate((samp_pad[..., None],                       # (n_s, P, P, 1)
                                        np.broadcast_to(pred_pad,
                                                       (n_samples, *pred_pad.shape[1:]))),
-                                      axis=3)
-    
-            if step % 2:                               # vertical
-                data = data.transpose(0, 2, 1, 3)      # swap x ↔ y for all samples
-    
-            offset   = segment_len + random_offset
-            side     = padded_side - 2 * segment_len
-            sliced   = data[:, segment_len:-segment_len,
-                              offset:offset + side, :]  # (n_s, side, side, cols)
-    
+                                      axis=3)                                     # (n_s, P, P, cols)
+        
+            if step % 2:                                  # vertical pass
+                # swap x ↔ y for every sample
+                data = data.transpose(0, 2, 1, 3)         #   (n_s, P, P, cols)
+        
+            # -------- vectorised slice with per-sample offset ----------------------
+            P      = padded_side
+            side   = P - 2 * segment_len
+            samp_i = np.arange(n_samples)[:, None, None]                         # (n_s,1,1)
+        
+            rows   = np.arange(segment_len, segment_len + side)[None, :, None]   # (1,side,1)
+            cols   = offsets[:, None, None] + np.arange(side)[None, None, :]     # (n_s,1,side)
+        
+            # broadcast to (n_s, side, side)
+            rows_b = np.broadcast_to(rows, (n_samples, side, side))
+            cols_b = np.broadcast_to(cols, (n_samples, side, side))
+        
+            # gather => (n_s, side, side, cols_per_samp)
+            sliced = data[samp_i, rows_b, cols_b, :]
+        
+            # reshape to (n_samples·n_seg, cols_per_samp, 64)
             segments = (sliced
-                        .reshape(n_samples, n_seg, segment_len, cols_per_samp)
+                        .reshape(n_samples, side * side // segment_len,
+                                 segment_len, cols_per_samp)
                         .transpose(0, 1, 3, 2)
-                        .reshape(-1, cols_per_samp, segment_len))
-    
+                        .reshape(-1, cols_per_samp, segment_len)
+                        .astype(np.float32))
+            
         # ■■■■■■■■■■■■■■■■■■■■■  SEND THROUGH THE MODEL (unchanged)  ■■■■■■■■■■■■■■■■■■■■■■■
         ds        = torch.from_numpy(segments).to(device).float()
         #ds        = torch.cat((ds, torch.ones_like(ds[:, :1, :])), axis=1)
@@ -230,32 +247,54 @@ def infer_patch(model, noise_scheduler, params, patch_ix, patch_size, date, nsid
         all_samples = do_step_loader(model, noise_scheduler, dataloader,
                                      t, device, jump)           # 1-D tensor
     
-        # ■■■■■■■■■■■■■■■■■■■■  scatter the predictions back  ■■■■■■■■■■■■■■■■■■■■■■■■■■
-        # reshape back to (n_samples, n_seg, 64) → (n_samples, patch_size)
-        preds = all_samples.reshape(n_samples, n_seg, segment_len).reshape(
-                n_samples, patch_size)
-    
-        if step % 3 == 0:                         # ring case
+        preds = all_samples.reshape(n_samples, -1, segment_len).reshape(n_samples, patch_size)
+        
+        side = padded_side - 2 * segment_len          # = √patch_size
+        rows_core = np.arange(segment_len, segment_len + side)   # common row band
+        cols_core = rows_core                         # same numbers but used as columns
+        
+        # broadcast sample index axis (n_s, side, side)
+        samp_idx = np.broadcast_to(np.arange(n_samples)[:, None, None],
+                                   (n_samples, side, side))
+        
+        if step % 3 == 0:                     # ─── ring case (unchanged) ───────────
             imgs = preds[:, inverse].reshape(n_samples, side, side)
             sample_context_ds[segment_len:-segment_len,
-                              segment_len:-segment_len, :n_samples] = imgs.transpose(1, 2, 0)
-        elif step % 2 == 0:                       # horizontal
-            imgs = preds.reshape(n_samples, side, side)
-            sample_context_ds[segment_len:-segment_len,
-                              offset:offset + side, :n_samples] = imgs.transpose(1, 2, 0)
-        else:                                     # vertical
-            imgs = preds.reshape(n_samples, side, side).transpose(0, 2, 1)
-            sample_context_ds[offset:offset + side,
-                              segment_len:-segment_len, :n_samples] = imgs.transpose(1, 2, 0)
-    
+                              segment_len:-segment_len,
+                              :n_samples] = imgs.transpose(1, 2, 0)
+        
+        elif step % 2 == 0:                   # ─── horizontal, per-sample offset ───
+            imgs = preds.reshape(n_samples, side, side)           # (n_s, y, x)
+        
+            # index arrays with broadcasting
+            rows_idx = np.broadcast_to(rows_core[None, :, None],
+                                       (n_samples, side, side))
+            cols_idx = offsets[:, None, None] + np.broadcast_to(
+                                       np.arange(side)[None, None, :],
+                                       (n_samples, side, side))
+        
+            # scatter back
+            sample_context_ds[rows_idx, cols_idx, samp_idx] = imgs
+        
+        else:                                 # ─── vertical, per-sample offset ─────
+            imgs = preds.reshape(n_samples, side, side).transpose(0, 2, 1)  # rotate
+        
+            rows_idx = offsets[:, None, None] + np.broadcast_to(
+                                       np.arange(side)[None, :, None],
+                                       (n_samples, side, side))
+            cols_idx = np.broadcast_to(cols_core[None, None, :],
+                                       (n_samples, side, side))
+        
+            sample_context_ds[rows_idx, cols_idx, samp_idx] = imgs
+            
         step += 1
-    
+            
     # remove padding from result
     sample_context_ds = sample_context_ds[segment_len:-segment_len, segment_len:-segment_len, :]
     return np.concatenate([sample_context_ds, lat[:,:, np.newaxis], lon[:,:, np.newaxis], patch_pix[:, :, np.newaxis], ring_pix[:, :, np.newaxis]], axis=2)
 
 
-    import pandas as pd
+import pandas as pd
 from fco2models.models import UNet2DModelWrapper, Unet2DClassifierFreeModel, UNet2DShipMix, UNet1DModelWrapper
 from fco2models.ueval import load_model
 # load baseline model
@@ -276,7 +315,7 @@ ddim_scheduler = DDIMScheduler(
     #timestep_spacing="trailing"
     )
 ddim_scheduler.set_timesteps(50)
-n=5
+n=2
 nside = 2**10
 npix = hp.nside2npix(nside)
 face_pixs = npix//12
@@ -287,7 +326,7 @@ print(f"Patch size: {patch_size}")
 
 patch_ix = 31
 samples = []
-date_range = pd.date_range(start='2022-01-01', end='2022-01-07', freq='D')
+date_range = pd.date_range(start='2022-01-01', end='2022-01-02', freq='D')
 dfs = []
 date_range_loop = tqdm(date_range, desc="Processing dates")
 for date in date_range_loop:
