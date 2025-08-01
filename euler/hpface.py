@@ -129,7 +129,7 @@ def do_step_loader(model, noise_scheduler, dataloader, t, device, jump):
 
 import torch
 from tqdm import tqdm
-def infer_patch(model, noise_scheduler, params, patch_ix, patch_size, date, nside, dss=None, jump=20):
+def infer_patch(model, noise_scheduler, params, patch_ix, patch_size, date, nside, dss=None, jump=None, n_samples=1):
     
     # get dataset collocated for the patch
     context_ds = get_patch_ds(params, patch_ix, patch_size, date, nside=nside, dss=dss)
@@ -147,44 +147,56 @@ def infer_patch(model, noise_scheduler, params, patch_ix, patch_size, date, nsid
     padded_context_ds[segment_len: -segment_len, segment_len: -segment_len, :] = context_ds
     padded_context_ds[segment_len:-segment_len, :segment_len, :] = context_ds[:, :segment_len, :][:, ::-1, :] # just mirror the data for now
     padded_context_ds[segment_len:-segment_len, -segment_len:, :] = context_ds[:, -segment_len:, :][:, ::-1, :]
-    
-    sample_col = np.random.randn(padded_side, padded_side, 1).astype(np.float32)
-    sample_context_ds = np.concatenate([sample_col, padded_context_ds, np.ones_like(sample_col)], axis=2)
+
+    sample_cols = np.random.randn(padded_side, padded_side, n_samples).astype(np.float32)
+    sample_context_ds = np.concatenate([sample_cols, padded_context_ds, np.ones((padded_side, padded_side, 1))], axis=2)
+    pred_cols = np.arange(n_samples, sample_context_ds.shape[2])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     step = 0
     t_loop = tqdm(noise_scheduler.timesteps[::jump], desc="Denoising steps")
     
     for t in t_loop:
-        random_offset = np.random.randint(-60, 60)
-        if step % 3 == 0:
-            ring_ds = sample_context_ds[segment_len:-segment_len, segment_len:-segment_len, :].reshape(patch_size, -1)
-            #ring_pix = ring_ds[:, -2].flatten()
-            order = np.argsort(ring_pix.flatten())
-            segments = ring_ds[order].reshape(patch_size//64, 64, -1)
-            segments = np.swapaxes(segments, 1, 2)
-        elif step % 2 == 0:
-            segments = segment_sample(sample_context_ds.copy(), 'horizontal', segment_len=64, random_offset=random_offset)
-        else:
-            segments = segment_sample(sample_context_ds.copy(), 'vertical', segment_len=64, random_offset=random_offset)
+        all_segments = []
+        random_offsets = [np.random.randint(-60, 60) for i in range(n_samples)]
+        for i in range(n_samples):
+            colixs = np.concatenate((np.array([i]), pred_cols))
+            #print(f"colixs: {colixs}")
+            #sample_context_ds = samples_context_ds[:, :, colixs]
+            if step % 3 == 0:
+                ring_ds = sample_context_ds[segment_len:-segment_len, segment_len:-segment_len, colixs].reshape(patch_size, -1)
+                #ring_pix = ring_ds[:, -2].flatten()
+                order = np.argsort(ring_pix.flatten())
+                segments = ring_ds[order].reshape(patch_size//segment_len, segment_len, -1)
+                segments = np.swapaxes(segments, 1, 2)
+            elif step % 2 == 0:
+                segments = segment_sample(sample_context_ds[:, :, colixs], 'horizontal', segment_len=segment_len, random_offset=random_offsets[i])
+            else:
+                segments = segment_sample(sample_context_ds[:, :, colixs], 'vertical', segment_len=segment_len, random_offset=random_offsets[i])
 
+            all_segments.append(segments)
+            
+        segments = np.concatenate(all_segments, axis=0)
+        #print(segments.shape)
         ds = torch.from_numpy(segments).to(device).float()
         dataloader = torch.utils.data.DataLoader(ds, batch_size=4096, shuffle=False)
 
-        samples = do_step_loader(model, noise_scheduler, dataloader, t, device, jump)
+        all_samples = do_step_loader(model, noise_scheduler, dataloader, t, device, jump)
         
-        offset = random_offset + segment_len
-        
-        if step % 3 == 0:
-            samples_ordered = samples.flatten()[np.argsort(order)]
-            sample_context_ds[segment_len:-segment_len, segment_len:-segment_len, 0] = samples_ordered.reshape(side, side)
-        elif step % 2 == 0:
-            samples = samples.reshape(side, side)
-            sample_context_ds[segment_len:-segment_len, offset:offset + side, 0] = samples
-        else:
-            samples = samples.reshape(side, side).T
-            sample_context_ds[offset:offset + side, segment_len:-segment_len, 0] = samples
+        for i in range(n_samples):
+            offset = random_offsets[i] + segment_len
+            samples = all_samples[i * (patch_size // segment_len): (i + 1) * (patch_size // segment_len)]
+            if step % 3 == 0:
+                samples_ordered = samples.flatten()[np.argsort(order)]
+                sample_context_ds[segment_len:-segment_len, segment_len:-segment_len, i] = samples_ordered.reshape(side, side)
+            elif step % 2 == 0:
+                samples = samples.reshape(side, side)
+                sample_context_ds[segment_len:-segment_len, offset:offset + side, i] = samples
+            else:
+                samples = samples.reshape(side, side).T
+                sample_context_ds[offset:offset + side, segment_len:-segment_len, i] = samples
 
+        #samples_context_ds[:, :, i] = sample_context_ds[:, :, 0]
         step += 1
     
     # remove padding from result
@@ -213,19 +225,19 @@ ddim_scheduler = DDIMScheduler(
     #timestep_spacing="trailing"
     )
 ddim_scheduler.set_timesteps(50)
-n=1
+n=10
 nside = 2**10
 npix = hp.nside2npix(nside)
 face_pixs = npix//12
-num_subfaces = 1 # number of subfaces should a power of 4
+num_subfaces = 4 # number of subfaces should a power of 4
 patch_size = face_pixs // num_subfaces
 #print(f"Number of patches: {n_patches}")
 print(f"Patch size: {patch_size}")
 
-patch_ixs = range(7,8)
+patch_ixs = range(31,32)
 samples = []
 for patch_ix in patch_ixs:
-    sample = infer_patch(model, ddim_scheduler, params, patch_ix, patch_size, date, nside=nside, dss=None, jump=None)
+    sample = infer_patch(model, ddim_scheduler, params, patch_ix, patch_size, date, nside=nside, dss=None, jump=None, n_samples=n)
     samples.append(sample)
 
 sample = np.concatenate(samples, axis=0)
@@ -242,9 +254,9 @@ df = pd.DataFrame({
 for i, col in enumerate(params['predictors']):
     df[col] = sample[:, :, i + 1].flatten()
 
-sample_cols = [f"sample_0"]
-df['sample_0'] = sample[:, :, 0].flatten()
+sample_cols = [f"sample_{i}" for i in range(n)]
+df[sample_cols] = sample[:, :, :n].reshape(-1, n)
 df['xco2'] = df['xco2'] * params['train_stds'][11] + params['train_means'][11]
 df[sample_cols] =df[sample_cols] * params['train_stds'][0] + params['train_means'][0] + df['xco2'].values[:, np.newaxis]
 df.set_index('patch_pix', inplace=True)
-df.to_parquet(f'{save_path}patch.pq')
+df.to_parquet(f'{save_path}minipatch.pq')
