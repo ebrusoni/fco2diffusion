@@ -8,14 +8,14 @@ is_renkulab = True
 DATA_PATH, logging = add_src_and_logger(is_renkulab, None)
 
 def normalize(df, stats, mode):
-    for i in range(1, len(df.columns)): # first column is the target
-        col = df.columns[i - 1]
+    for i in range(len(stats['means']) - 1): # first column is the target
+        col = df.columns[i]
         # print(f"Normalizing {col} with {mode}")
         if mode == 'min_max':
             # print(f"Min: {stats['mins'][i]}, Max: {stats['maxs'][i]}")
-            df[col] = 2 * (df[col] - stats['mins'][i]) / (stats['maxs'][i] - stats['mins'][i]) - 1
+            df[col] = 2 * (df[col] - stats['mins'][i + 1]) / (stats['maxs'][i + 1] - stats['mins'][i + 1]) - 1
         elif mode == 'mean_std':
-            df[col] = (df[col] - stats['means'][i]) / stats['stds'][i]
+            df[col] = (df[col] - stats['means'][i + 1]) / stats['stds'][i + 1]
         else:
             raise ValueError(f"Unknown mode {mode}")
     return df
@@ -66,11 +66,11 @@ def init_denoise_df(df, n_recs=10):
     """
     rec_cols = [f'rec_{i}' for i in range(n_recs)]
     df.loc[:, rec_cols] = np.random.randn(len(df), n_recs)  # Random values for recs
-    df.loc[:, 'expocode_id'] = df['expocode'].map(get_expocode_map(df))
+    df.loc[:, 'expocode_id'] = df.loc[:, 'expocode'].map(get_expocode_map(df.loc[:, :]))
     df = reflect_dataframe_edges(df)
     return df
 
-def reflect_dataframe_edges(df: pd.DataFrame, group_col: str = "expocode", n: int = 128) -> pd.DataFrame:
+def reflect_dataframe_edges(df: pd.DataFrame, group_col: str = "expocode", n: int = 64) -> pd.DataFrame:
     def reflect_group(group):
         g_n = len(group)
         if g_n < n :
@@ -81,8 +81,29 @@ def reflect_dataframe_edges(df: pd.DataFrame, group_col: str = "expocode", n: in
         bottom_reflection = group.iloc[-n:][::-1]
         bottom_reflection.window_id = np.arange(g_n, g_n + n, 1)
         return pd.concat([top_reflection, group, bottom_reflection], ignore_index=True)
+    
+    def repeat_group(group):
+        g_n = len(group)
+        if g_n < n:
+            return group
+        
+        # Repeat top n rows m times
+        top_repeat = pd.concat([group.iloc[[0]]] * n, axis=0)
+        #print(top_repeat)
+        top_repeat.window_id = np.arange(-n, 0, 1)  # Assign window IDs (adjust logic if needed)
 
-    return df.groupby(group_col, group_keys=False).apply(reflect_group).reset_index(drop=True)
+        # Repeat bottom n rows m times
+        bottom_repeat = pd.concat([group.iloc[[-1]]] * n, axis=0)
+        bottom_repeat.window_id = np.arange(g_n, g_n + n, 1)
+
+        #Concatenate top repeats, original group, bottom repeats
+        return pd.concat([top_repeat, group, bottom_repeat], ignore_index=True)
+    
+    #padded = df.groupby(group_col, group_keys=False).apply(repeat_group).reset_index(drop=True)
+    #print(padded.head(64))
+    #print(padded.tail(64))
+    
+    return df.groupby(group_col, group_keys=False)[df.columns].apply(repeat_group).reset_index(drop=True)
 
 from numpy.lib.stride_tricks import sliding_window_view
 def get_segments_fast(df, cols, num_windows=64, step=64, offset=0):
@@ -155,7 +176,7 @@ def denoise_df(df, model_info, n_recs, jump=20):
         end = time.time()
         model_input = np.concatenate([ds[:, :-3, :], np.ones_like(ds[:, 0:1, :])], axis=1)
         model_input = torch.from_numpy(model_input).float().to(model.device)
-        dataloader = DataLoader(model_input, batch_size=1024, shuffle=False)
+        dataloader = DataLoader(model_input, batch_size=2048, shuffle=False)
         sample_df = step_and_collocate(model, t, dataloader, ddim_scheduler, n_recs, expo_ids, windows, recs)
 
         denoise_df.set_index(['expocode_id', 'window_id'], inplace=True)
@@ -174,7 +195,7 @@ from fco2models.umeanest import MLPModel
 
 save_path = '../models/anoms_sea_1d/'
 model_dict = {
-    'dm': [save_path, 'e_240.pt', UNet1DModelWrapper],
+    'dm': [save_path, 'e_200.pt', UNet1DModelWrapper],
 }
 models = load_models(model_dict)
 df = pd.read_parquet(DATA_PATH + "SOCAT_1982_2021_grouped_colloc_augm_bin.pq", engine='pyarrow')
@@ -189,15 +210,17 @@ _, mask_val, mask_test = make_monthly_split(df)
 df_val = df.loc[df.expocode.map(mask_val), :]
 df_test = df.loc[df.expocode.map(mask_test), :]
 
-#expocodes = ["AG5W20141113"]
-expocodes = df_val.expocode.unique()
+expocodes = ["AG5W20141113"]
+#expocodes = df_val.expocode.unique()
 n_recs = 20
 rec_cols = [f'rec_{i}' for i in range(n_recs)]
 model_info = models['dm']
 params = model_info['params']
-ds = denoise_df(df_val[df_val.expocode.isin(expocodes)].copy(), model_info, n_recs=n_recs, jump=None)
+df_in = pd.concat((df_val, df_test), axis=0)
+ds = denoise_df(df_in, model_info, n_recs=n_recs, jump=None)
 ds.set_index('index', inplace=True)
 ds.loc[:, rec_cols] = rescale(ds.loc[:, rec_cols].values.reshape(-1, 1), params, params['mode']).reshape(-1, n_recs)
 
-ds = ds.groupby("expocode").apply(lambda df: df.sort_values(by='window_id').iloc[128:-128])
+#print(ds.head())
+ds = ds.groupby("expocode").apply(lambda df: df.sort_values(by='window_id').iloc[64:-64], include_groups=False)
 ds.to_parquet(f'{save_path}val_predictions.pq')
