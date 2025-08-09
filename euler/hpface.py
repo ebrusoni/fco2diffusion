@@ -329,7 +329,8 @@ def infer_patch_gpu(
     dtype=torch.float32,        # use torch.float32 if reproducibility beats speed
 ):
     """Torch-only version of the original NumPy routine (logic unchanged)."""
-
+    
+    print(device)
     # ───────────────────────── context & padding ───────────────────────────
     context_ds_np = get_patch_ds(params, patch_ix, patch_size, date,
                                  nside=nside, dss=dss).astype(np.float32)
@@ -387,6 +388,7 @@ def infer_patch_gpu(
     model.to(device).eval()
 
     # ───────────────────────────── main loop ───────────────────────────────
+    print(steps)
     for step_no, t in enumerate(steps):
         ring_pass = (step_no % 3 == 0)
         vert_pass = (step_no % 3 == 2)        # i.e. step_no % 2 and not ring
@@ -519,7 +521,7 @@ def infer_patch_gpu(
     result = sample_context[segment_len:-segment_len,
                             segment_len:-segment_len, :].cpu().numpy()
     extra  = np.stack((lat, lon, patch_pix, ring_pix), axis=2)    # (P,P,4)
-    return np.concatenate((result, extra), axis=2)
+    return np.concatenate((result, extra), axis=2, dtype=np.float32)
 
 
 import pandas as pd
@@ -542,25 +544,25 @@ ddim_scheduler = DDIMScheduler(
     clip_sample_range=noise_scheduler.config.clip_sample_range,
     #timestep_spacing="trailing"
     )
-timesteps = None #np.concatenate((np.arange(0, 40, 2), np.arange(40, 1000, 20)))[::-1]
+timesteps = np.concatenate((np.arange(0, 40, 2), np.arange(40, 1000, 20)))[::-1]
 print(timesteps)
  # /opt/conda/lib/python3.10/site-packages/diffusers/schedulers/scheduling_ddim.py, line 335 for passing inference steps as list
 
-n_steps = 70
-ddim_scheduler.set_timesteps(n_steps, )#steps=timesteps)
-n=20
+n_steps = 50
+ddim_scheduler.set_timesteps(n_steps, steps=None)
+n=10
 nside = 2**10
 npix = hp.nside2npix(nside)
 face_pixs = npix//12
-num_subfaces = 4 # number of subfaces should a power of 4
+num_subfaces = 1 # number of subfaces should a power of 4
 patch_size = face_pixs // num_subfaces
 #print(f"Number of patches: {n_patches}")
 print(f"Patch size: {patch_size}")
 
-patch_ix = 31
+patch_ix = 2
 samples = []
-start_date ='2021-11-01' 
-date_range = pd.date_range(start=start_date, end='2022-03-01', freq='D')
+start_date ='2022-06-01' 
+date_range = pd.date_range(start=start_date, end='2022-06-03', freq='D')
 dfs = []
 dfs_cond = []
 date_range_loop = tqdm(date_range, desc="Processing dates")
@@ -573,14 +575,13 @@ timesteps = ddim_scheduler.timesteps
 for date in date_range_loop:
     #print(date)
     t_loop = None if date == pd.Timestamp(start_date) else timesteps[n_steps // 2:]
-    #print(t_loop)
     sample = infer_patch_gpu(model, ddim_scheduler, params, patch_ix, patch_size, date, nside=nside, 
                         dss=None, jump=None, n_samples=n, t_loop=t_loop, start_sample=start_sample)
     
     lat = sample[:, :, -4]
     lon = sample[:, :, -3]
-    patch_pix = sample[:, :, -2]
-    ring_pix = sample[:, :, -1]
+    patch_pix = sample[:, :, -2].astype(int)
+    #ring_pix = sample[:, :, -1]
     
     # Base DataFrame with index
     index = pd.MultiIndex.from_arrays([
@@ -590,8 +591,8 @@ for date in date_range_loop:
     ], names=['patch_pix', 'lat', 'lon'])
     
     # Prepare sample columns
-    sample_cols = [f"sample_{i}" for i in range(n)] + params['predictors']
-    sample_data = sample[:, :, :-5].reshape(-1, len(sample_cols))
+    sample_cols = [f"sample_{i}" for i in range(n)] #+ params['predictors']
+    sample_data = sample[:, :, :n].reshape(-1, n).copy()
     #n_cond = sample.shape[2] - n - 5
     #context = sample[:, :, n:-5].reshape(-1, n_cond)
     #print(sample_data[0, :])
@@ -611,13 +612,13 @@ for date in date_range_loop:
     df = pd.DataFrame(sample_data, index=index, columns=columns)
     #df2 = pd.DataFrame(context, index=index, columns= cond_columns)
     #print(df.head())
-    dfs.append(df)
+    dfs = df if date == pd.Timestamp(start_date) else pd.concat([dfs, df], axis=1)
     #dfs_cond.append(df2)
     
-    start_sample = sample[:, :, :n].copy()
-    start_sample = torch.from_numpy(start_sample)
+    start_sample = torch.from_numpy(sample[:, :, :n])
+    print(timesteps[n_steps // 2 - 1])
     start_sample = ddim_scheduler.add_noise(start_sample, torch.randn_like(start_sample), timesteps[n_steps // 2 - 1]).numpy()
     date_range_loop.set_postfix(date=date.strftime('%Y-%m-%d'), shape=df.shape)
 
-pd.concat(dfs, axis=1).to_parquet(f'{save_path}test.pq')
+dfs.to_parquet(f'{save_path}nwamerica.pq')
 #pd.concat(dfs_cond, axis=1).to_parquet(f'{save_path}testcond.pq')
