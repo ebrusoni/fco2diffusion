@@ -42,7 +42,7 @@ def step_and_collocate(model, t, dataloader, noise_scheduler, n_recs, expo_ids, 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     for batch in dataloader:
         batch = batch.to(device)
-        sample = diffusion_step(model, noise_scheduler, batch, t, jump=20)
+        sample = diffusion_step(model, noise_scheduler, batch, t, jump=None)
         samples.append(sample.cpu().numpy())
 
     samples = np.concatenate(samples, axis=0).squeeze(axis=1)
@@ -60,14 +60,14 @@ def step_and_collocate(model, t, dataloader, noise_scheduler, n_recs, expo_ids, 
     return sample_df
 
 from fco2models.ueval import get_expocode_map
-def init_denoise_df(df, n_recs=10):
+def init_denoise_df(df, n_recs=10, n=64):
     """
     Initialize a DataFrame for denoising with the required columns.
     """
     rec_cols = [f'rec_{i}' for i in range(n_recs)]
+    df = reflect_dataframe_edges(df, n=n)
     df.loc[:, rec_cols] = np.random.randn(len(df), n_recs)  # Random values for recs
     df.loc[:, 'expocode_id'] = df.loc[:, 'expocode'].map(get_expocode_map(df.loc[:, :]))
-    df = reflect_dataframe_edges(df)
     return df
 
 def reflect_dataframe_edges(df: pd.DataFrame, group_col: str = "expocode", n: int = 64) -> pd.DataFrame:
@@ -84,8 +84,9 @@ def reflect_dataframe_edges(df: pd.DataFrame, group_col: str = "expocode", n: in
     
     def repeat_group(group):
         g_n = len(group)
-        if g_n < n:
-            return group
+        #if g_n < n:
+        #    rest = n - g_n
+        #    return group
         
         # Repeat top n rows m times
         top_repeat = pd.concat([group.iloc[[0]]] * n, axis=0)
@@ -93,8 +94,9 @@ def reflect_dataframe_edges(df: pd.DataFrame, group_col: str = "expocode", n: in
         top_repeat.window_id = np.arange(-n, 0, 1)  # Assign window IDs (adjust logic if needed)
 
         # Repeat bottom n rows m times
-        bottom_repeat = pd.concat([group.iloc[[-1]]] * n, axis=0)
-        bottom_repeat.window_id = np.arange(g_n, g_n + n, 1)
+        rest = n - g_n % n if g_n >= n else n - g_n
+        bottom_repeat = pd.concat([group.iloc[[-1]]] * (n + rest), axis=0) # extend to n exactly so that get_segments_fast works
+        bottom_repeat.window_id = np.arange(g_n, g_n + n + rest, 1)
 
         #Concatenate top repeats, original group, bottom repeats
         return pd.concat([top_repeat, group, bottom_repeat], ignore_index=True)
@@ -116,6 +118,16 @@ def get_segments_fast(df, cols, num_windows=64, step=64, offset=0):
     windows = sliding_window_view(arr, num_windows, axis=0)
     windows = windows[offset::step]                           # stride in one go
     return windows
+
+def step_get_samples(model, t, dataloader, noise_scheduler):
+    outs = []
+    with torch.inference_mode():
+        for batch in dataloader:                    # batch is CPU
+            batch = batch.to(model.device, non_blocking=True)
+            sample = diffusion_step(model, noise_scheduler, batch, t, jump=None)
+            outs.append(sample.cpu().numpy())
+    return np.concatenate(outs, axis=0).squeeze(axis=1)  # (N, L)
+
 
 def segment_rec_df(df, predictors, n_recs, segment_len=64):
     """
@@ -149,7 +161,10 @@ def denoise_df(df, model_info, n_recs, jump=20):
         clip_sample_range=noise_scheduler.config.clip_sample_range,
         #timestep_spacing="trailing"
        )
-    ddim_scheduler.set_timesteps(50)
+    timesteps = np.concatenate((np.arange(0, 40, 2), np.arange(40, 1000, 20)))[::-1]
+    #print(timesteps)
+    # /opt/conda/lib/python3.10/site-packages/diffusers/schedulers/scheduling_ddim.py, line 335 for passing inference steps as list
+    ddim_scheduler.set_timesteps(50, steps=None)
    
     stats = {
         'means': params['train_means'],
@@ -172,6 +187,7 @@ def denoise_df(df, model_info, n_recs, jump=20):
         
         expo_ids = ds[:, -3, :].astype(int)
         windows = ds[:, -2, :].astype(int)
+        #print(windows)
         recs = ds[:, -1, :].astype(int)
         end = time.time()
         model_input = np.concatenate([ds[:, :-3, :], np.ones_like(ds[:, 0:1, :])], axis=1)
@@ -185,11 +201,79 @@ def denoise_df(df, model_info, n_recs, jump=20):
     
     return denoise_df
 
+def denoise_df_2(df, model_info, n_recs, jump=None, n=64):
+    params = model_info['params']
+    predictors = params['predictors']
+    model = model_info['model']
+    noise_scheduler = model_info['noise_scheduler']
+
+    ddim_scheduler = DDIMScheduler(
+        num_train_timesteps=noise_scheduler.config.num_train_timesteps,
+        beta_schedule=noise_scheduler.config.beta_schedule,
+        clip_sample_range=noise_scheduler.config.clip_sample_range,
+    )
+    timesteps = np.concatenate((np.arange(0, 40, 2), np.arange(40, 1000, 20)))[::-1]
+    ddim_scheduler.set_timesteps(50, steps=None)
+
+    stats = {
+        'means': params['train_means'],
+        'stds': params['train_stds'],
+        'mins': params['train_mins'],
+        'maxs': params['train_maxs'],
+    }
+
+    df.loc[:, predictors] = normalize(df.loc[:, predictors], stats, params['mode'])
+    denoise_df = init_denoise_df(df, n_recs=n_recs, n=n)
+    rec_cols = [f'rec_{i}' for i in range(n_recs)]
+
+    # Ensure integer dtypes for keys (helps get_indexer)
+    denoise_df['expocode_id'] = denoise_df['expocode_id'].astype(np.int64)
+    denoise_df['window_id']   = denoise_df['window_id'].astype(np.int64)
+
+    # --- build fixed indexer and a direct view of the rec block
+    row_mi = pd.MultiIndex.from_frame(denoise_df[['expocode_id', 'window_id']])
+    rec_block = denoise_df[rec_cols].to_numpy(copy=False)  # (n_rows, n_recs)
+
+    t_loop = tqdm(ddim_scheduler.timesteps[::jump], desc="Denoising steps")
+    model.eval()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
+
+    for t in t_loop:
+        ds = segment_rec_df(denoise_df, predictors, n_recs)
+
+        expo_ids = ds[:, -3, :].astype(np.int64)  # (N, L)
+        windows  = ds[:, -2, :].astype(np.int64)  # (N, L)
+        recs     = ds[:, -1, :].astype(np.int64)  # (N, L)
+
+        model_input = np.concatenate([ds[:, :-3, :], np.ones_like(ds[:, 0:1, :])], axis=1)
+        model_input = torch.from_numpy(model_input).float()       # stay on CPU here
+        dataloader = DataLoader(model_input, batch_size=2048, shuffle=False, pin_memory=True)
+
+        samples = step_get_samples(model, t, dataloader, ddim_scheduler)  # (N, L)
+
+        # Vectorised row lookup: -1 where (expocode_id, window_id) is missing
+        idx = pd.MultiIndex.from_arrays([expo_ids.ravel(), windows.ravel()])
+        rows = row_mi.get_indexer(idx)                      # ndarray of int64 (−1 for miss)
+        mask = rows != -1
+        #print(mask.sum())
+        #print(mask.shape)
+        if mask.any():
+            rows_i = rows[mask]
+            cols_i = recs.ravel()[mask]
+            vals   = samples.ravel()[mask]
+            rec_block[rows_i, cols_i] = vals
+        
+        denoise_df[rec_cols] = rec_block
+    return denoise_df
+
+
+
 import pandas as pd
 import numpy as np
-from fco2models.utraining import prep_df, make_monthly_split
+from fco2models.utraining import prep_df, make_monthly_split, impute_df
 from fco2models.ueval import rescale
-from fco2models.models import UNet2DModelWrapper, MLPNaiveEnsemble, UNet1DModelWrapper
+from fco2models.models import UNet2DModelWrapper, MLPNaiveEnsemble, UNet1DModelWrapper, Unet1DClassifierFreeModel
 from fco2models.ueval import load_models
 from fco2models.umeanest import MLPModel
 
@@ -206,21 +290,37 @@ df['sss_anom'] = df['sss_cci'] - df['sss_clim']
 df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
 df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
 df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim']
-_, mask_val, mask_test = make_monthly_split(df)
+mask_train, mask_val, mask_test = make_monthly_split(df)
+df_train = df.loc[df.expocode.map(mask_train), :]
 df_val = df.loc[df.expocode.map(mask_val), :]
 df_test = df.loc[df.expocode.map(mask_test), :]
 
 expocodes = ["AG5W20141113"]
 #expocodes = df_val.expocode.unique()
-n_recs = 20
+n_recs = 50
 rec_cols = [f'rec_{i}' for i in range(n_recs)]
 model_info = models['dm']
+#model_info['model'].set_w(0.5)
 params = model_info['params']
-df_in = pd.concat((df_val, df_test), axis=0)
-ds = denoise_df(df_in, model_info, n_recs=n_recs, jump=None)
+#df_val = impute_df(df_val, params['predictors'])
+df_test = impute_df(df_test, params['predictors'])
+df_in = pd.concat((df_test, ), axis=0)
+#df_in = df_in[df_in.expocode.isin(expocodes)]
+pad = 64
+ds = denoise_df_2(df_in, model_info, n_recs=n_recs, jump=None, n=pad)
 ds.set_index('index', inplace=True)
+xco2_ix = params['predictors'].index('xco2') + 1
 ds.loc[:, rec_cols] = rescale(ds.loc[:, rec_cols].values.reshape(-1, 1), params, params['mode']).reshape(-1, n_recs)
-
+ds.loc[:, rec_cols] += (ds['xco2'].values[:, None] * params['train_stds'][xco2_ix] + params['train_means'][xco2_ix])
 #print(ds.head())
-ds = ds.groupby("expocode").apply(lambda df: df.sort_values(by='window_id').iloc[64:-64], include_groups=False)
-ds.to_parquet(f'{save_path}val_predictions.pq')
+
+
+df_in = df_in.reset_index()
+print(f"shape df_in: {df_in.shape}")
+def trim(df):
+    len_expocode = len(df_in[df_in.expocode==df.expocode.iloc[0]])
+    return df.sort_values(by='window_id').iloc[pad:pad+len_expocode]
+    
+ds = ds.groupby("expocode").apply(trim)
+print(f"shape ds: {ds.shape}")
+ds.to_parquet(f'{save_path}test_imputed.pq')
