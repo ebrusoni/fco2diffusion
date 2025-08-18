@@ -87,8 +87,8 @@ def do_step_loader(model, noise_scheduler, dataloader, t, device, jump, eta):
 
 def do_random_rot(lon, lat, nest=True):
         random_zrotation = np.random.random() * 360
-        #random_yrotation = np.random.random() * 20
-        #random_xrotation = np.random.random() * 20
+        random_yrotation = np.random.random() * 5
+        random_xrotation = np.random.random() * 5
         rot = hp.Rotator(rot=(random_zrotation, 0, 0), eulertype="ZYX") # rotate only around the z-axis, so we do not mix equatirial and polar coordinates
         lon_rot, lat_rot = rot(lon, lat, lonlat=True)
         m_rot = hp.ang2pix(nside, lon_rot, lat_rot, nest=nest, lonlat=True)
@@ -125,7 +125,7 @@ def infer_patch_with_rotations(model, noise_scheduler, params, date, nside=1024,
     df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
     df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
     df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim']
-    context_df = df.loc[:, params['predictors']]
+    context_df = df.loc[:, params['predictors']+['seamask']]
     stats = {
         'means': params['train_means'],
         'stds': params['train_stds'],
@@ -151,7 +151,7 @@ def infer_patch_with_rotations(model, noise_scheduler, params, date, nside=1024,
     sample_cols = [f'sample_{i}' for i in range(n_samples)]
     cds_all = context_df[sample_cols + params['predictors']].values
     for i in range(n_samples):
-        cols = [f'sample_{i}'] + params['predictors']
+        cols = [f'sample_{i}'] + params['predictors'] + ['seamask']
         colixs = np.array([i] + list(range(n_samples, n_samples + len(params['predictors']))))
         cds = cds_all[:, colixs]
         print(f"cds shape: {cds.shape}")
@@ -176,7 +176,7 @@ def infer_patch_with_rotations(model, noise_scheduler, params, date, nside=1024,
                 ds = torch.cat((ds, torch.ones_like(ds[:, 0:1, :])), axis=1)
                 dataloader = torch.utils.data.DataLoader(ds, batch_size=8096, shuffle=False, num_workers=2)
 
-                samples = do_step_loader(model, noise_scheduler, dataloader, t, device, jump)
+                samples = do_step_loader(model, noise_scheduler, dataloader, t, device, jump, eta=1.0)
                 #cds[:, i] = samples.flatten()[np.argsort(order)]
                 tmp = np.empty(npix)
                 tmp[ring_rot] = samples.flatten()
@@ -228,7 +228,7 @@ def infer_patch_with_rotations(model, noise_scheduler, params, date, nside=1024,
             ds = torch.cat((ds, torch.ones_like(ds[:, :1, :])), dim=1)   # add the "ones" channel
             loader = torch.utils.data.DataLoader(ds, batch_size=8096, shuffle=False, num_workers=2)
             
-            samples = do_step_loader(model, noise_scheduler, loader, t, device, jump, eta=0)
+            samples = do_step_loader(model, noise_scheduler, loader, t, device, jump, eta=1.0)
             # samples now has length = n_total_pixels
             samples = samples.reshape(12, side, side)          # (face, y, x)
             
@@ -258,7 +258,7 @@ from tqdm import tqdm
 
 def infer_patch_with_rotations_gpu(
     model,
-    noise_scheduler,
+    ddim_scheduler,
     params,
     date,
     *,
@@ -302,7 +302,7 @@ def infer_patch_with_rotations_gpu(
     df["ssh_anom"]  = df["ssh_sla"] - df["ssh_clim"]
     df["mld_anom"]  = np.log10(df["mld_dens_soda"] + 1e-5) - df["mld_clim"]
 
-    context_df = df.loc[:, params["predictors"]]
+    context_df = df.loc[:, params["predictors"]+["seamask"]]
     stats      = {
         "means": params["train_means"],
         "stds":  params["train_stds"],
@@ -322,12 +322,13 @@ def infer_patch_with_rotations_gpu(
 
     # ────────────────────────── 1. tensors to GPU ─────────────────────────────────────
     pred_t = torch.as_tensor(
-        context_df[params["predictors"]].values, dtype=dtype, device=device
+        context_df[params["predictors"]+["seamask"]].values, dtype=dtype, device=device
     )                                                          # (npix, n_pred)
 
     # sample columns initialised with N(0,1)
     samples_t = torch.randn((npix, n_samples), dtype=dtype, device=device)
-
+    #samples_seg = torch.randn(64, n_samples, dtype=dtype, device=device)
+    #samples_t = samples_seg.repeat((npix // 64, 1))
     # column set [samples | predictors]
     cds_all_t = torch.cat((samples_t, pred_t), dim=1)          # (npix, n_s+n_pred)
 
@@ -343,18 +344,30 @@ def infer_patch_with_rotations_gpu(
     y_t = torch.as_tensor(y_np, device=device, dtype=torch.long)
 
     # ────────────────────────── 2. per-sample diffusion ──────────────────────────────
+    last_scheduler = DDIMScheduler(
+        num_train_timesteps=ddim_scheduler.config.num_train_timesteps,
+        beta_schedule=ddim_scheduler.config.beta_schedule,
+        clip_sample_range=ddim_scheduler.config.clip_sample_range,
+        #timestep_spacing="trailing"
+        )
     for i in range(n_samples):
-        cols_this  = [f"sample_{i}"] + params["predictors"]
+        cols_this  = [f"sample_{i}"] + params["predictors"] + ["seamask"]
         colixs     = torch.tensor(
-            [i] + list(range(n_samples, n_samples + len(params["predictors"]))),
+            [i] + list(range(n_samples, n_samples + len(params["predictors"]) + 1)),
             device=device,
             dtype=torch.long,
         )
 
         cds_t = cds_all_t[:, colixs]                           # (npix, 1+n_pred)
-
+        
+        noise_lvl = 1
+        step=-2
+        noise_scheduler = ddim_scheduler
+        t_loop = torch.cat([noise_scheduler.timesteps[::jump], torch.arange(noise_lvl-1, -1, step)]) 
+        last_step = len(noise_scheduler.timesteps[::jump]) - 1
+        last_scheduler.set_timesteps(noise_lvl // step, steps=torch.arange(noise_lvl-1, -1, step))
         for step_no, t in enumerate(
-            tqdm(noise_scheduler.timesteps[::jump], desc=f"sample {i}")
+            tqdm(t_loop, desc=f"sample {i}")
         ):
             ring_mode = (step_no % 3 == 0)
             vert_mode = (step_no % 3 == 2)
@@ -374,7 +387,7 @@ def infer_patch_with_rotations_gpu(
                                    .contiguous())
 
                 ds = torch.cat(
-                        (segments_t, torch.ones_like(segments_t[:, :1, :])),
+                        (segments_t, ),#torch.ones_like(segments_t[:, :1, :])),
                         dim=1,
                      )
                 loader = torch.utils.data.DataLoader(
@@ -396,7 +409,7 @@ def infer_patch_with_rotations_gpu(
 
                 fpix_faces     = (faces_t[:, None] * fnpix +
                                   torch.arange(fnpix, device=device))          # (12,f)
-                fpix_rot_faces = fpix_faces#m_rot[fpix_faces]                             # (12,f)
+                fpix_rot_faces = m_rot[fpix_faces]                             # (12,f)
 
                 df_all_t = cds_t[fpix_rot_faces]                               # (12,f,cols)
 
@@ -422,7 +435,7 @@ def infer_patch_with_rotations_gpu(
                                       .contiguous())
 
                 ds = torch.cat(
-                        (segments_t, torch.ones_like(segments_t[:, :1, :])),
+                        (segments_t, ),#torch.ones_like(segments_t[:, :1, :])),
                         dim=1,
                      )
                 loader = torch.utils.data.DataLoader(
@@ -442,6 +455,9 @@ def infer_patch_with_rotations_gpu(
                     y_idx.repeat(12),
                 ]
                 cds_t[fpix_rot_faces.reshape(-1), 0] = out_vals
+                if step_no == last_step:
+                    cds_t[:, 0] = noise_scheduler.add_noise(cds_t[:, 0], torch.randn_like(cds_t[:, 0]).to(device), torch.tensor(noise_lvl - 1))
+                    noise_scheduler = last_scheduler
 
         cds_all_t[:, i] = cds_t[:, 0]
 
@@ -471,17 +487,22 @@ ddim_scheduler = DDIMScheduler(
     num_train_timesteps=noise_scheduler.config.num_train_timesteps,
     beta_schedule=noise_scheduler.config.beta_schedule,
     clip_sample_range=noise_scheduler.config.clip_sample_range,
-    timestep_spacing="trailing"
+    #timestep_spacing="trailing"
     )
-timesteps = np.concatenate((np.arange(0, 40, 2), np.arange(40, 1000, 20)))[::-1]
-print(timesteps)
- # /opt/conda/lib/python3.10/site-packages/diffusers/schedulers/scheduling_ddim.py, line 335 for passing inference steps as list
-ddim_scheduler.set_timesteps(70)
-n=20
+#timesteps = np.concatenate((np.arange(0, 20, 2), np.arange(40, 1000, 20)))[::-1]
+#print(timesteps)
+#print(len(timesteps))
+# /opt/conda/lib/python3.10/site-packages/diffusers/schedulers/scheduling_ddim.py, line 335 for passing inference steps as list
+# 1. get previous step value (=t-1)
+# idx = (self.timesteps == timestep).nonzero(as_tuple=True)[0].item()
+# prev_timestep = self.timesteps[idx + 1] if idx+1 < self.num_inference_steps else -1
+## prev_timestep = timestep - self.config.num_train_timesteps // self.num_inference_steps
+ddim_scheduler.set_timesteps(50, steps=None)
+n=5
 df = infer_patch_with_rotations_gpu(model, ddim_scheduler, params, date, nside=nside, jump=None, n_samples=n)
 sample_cols = [f"sample_{i}" for i in range(n)]
 df['xco2'] = df['xco2'] * params['train_stds'][11] + params['train_means'][11]
 df[sample_cols] =df[sample_cols] * params['train_stds'][0] + params['train_means'][0] + df['xco2'].values[:, np.newaxis]
-df.to_parquet(f'{save_path}global.pq')
+df.to_parquet(f'{save_path}test.pq')
 
 
