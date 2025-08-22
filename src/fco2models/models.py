@@ -140,7 +140,13 @@ class UNet2DModelWrapper(UNet2DModel):
 
 # just a wrapper for the UNet2DModel forward to adjust the input shape
 class UNet1DModelWrapper(UNet1DModel):
-    
+    #/opt/conda/lib/python3.10/site-packages/diffusers/models/unets/unet_1d.py line 100
+    # correct to:
+    #if time_embedding_type == "fourier":
+    #     self.time_proj = GaussianFourierProjection(
+    #                        embedding_size=block_out_channels[0] // 2, set_W_to_weight=False, log=False, flip_sin_to_cos=flip_sin_to_cos
+    #                      )
+    #timestep_input_dim = block_out_channels[0]
     def forward(self, x, t, **kw):
         pred = super().forward(x, t, **kw)[0]
         return (pred[:, 0:1, :],)
