@@ -31,14 +31,12 @@ df_val = df.loc[df.expocode.map(mask_val), :]
 df_test = df.loc[df.expocode.map(mask_test), :]
 
 def normalize(df, stats, mode):
-    for i in range(1, len(df.columns)): # first column is the target
-        col = df.columns[i - 1]
-        # print(f"Normalizing {col} with {mode}")
+    for i in range(len(stats['means']) - 1): # first column is the target
+        col = df.columns[i]
         if mode == 'min_max':
-            # print(f"Min: {stats['mins'][i]}, Max: {stats['maxs'][i]}")
-            df[col] = 2 * (df[col] - stats['mins'][i]) / (stats['maxs'][i] - stats['mins'][i]) - 1
+            df[col] = 2 * (df[col] - stats['mins'][i + 1]) / (stats['maxs'][i + 1] - stats['mins'][i + 1]) - 1
         elif mode == 'mean_std':
-            df[col] = (df[col] - stats['means'][i]) / stats['stds'][i]
+            df[col] = (df[col] - stats['means'][i + 1]) / stats['stds'][i + 1]
         else:
             raise ValueError(f"Unknown mode {mode}")
     return df
