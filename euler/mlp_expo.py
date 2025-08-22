@@ -1,5 +1,4 @@
 from utils import add_src_and_logger
-save_dir = f'../models/sota_anoms/'
 is_renkulab = True
 DATA_PATH, logging = add_src_and_logger(is_renkulab, None)
 
@@ -12,8 +11,9 @@ from fco2models.models import MLPNaiveEnsemble
 from fco2models.ueval import load_models
 from fco2models.utraining import prep_df, make_monthly_split
 
+save_dir = f'../models/sota_anoms64/'
 model_info = {
-    'sota_ensemble': [save_dir, 'e_30.pt', MLPNaiveEnsemble],
+    'sota_ensemble': [save_dir, 'e_20.pt', MLPNaiveEnsemble],
 }
 models = load_models(model_info)
 
@@ -58,7 +58,7 @@ def get_samples_ensemble(df, model_info):
     ds = torch.from_numpy(df.loc[:, predictors].values).float()
     print(ds.shape)
     ds = TensorDataset(ds.unsqueeze(-1))
-    dataloader = DataLoader(ds, batch_size=128, shuffle=False)
+    dataloader = DataLoader(ds, batch_size=2048, shuffle=False)
     samples = []
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
@@ -75,11 +75,11 @@ def get_samples_ensemble(df, model_info):
     return samples 
 
 from fco2models.ueval import rescale
-samples = get_samples_ensemble(df_val.copy(), models['sota_ensemble'])
+samples = get_samples_ensemble(df_test.copy(), models['sota_ensemble'])
 params = models['sota_ensemble']['params']
 samples = rescale(samples.reshape(-1, 1), params, params['mode']).reshape(20, -1)
 
 mlp_pred_cols = [f'mlp_{i}' for i in range(samples.shape[0])]
-df_val.loc[:, mlp_pred_cols] = samples.T
+df_test.loc[:, mlp_pred_cols] = samples.T
 
-df_val.to_parquet(f'{save_dir}val_predictions.pq')
+df_test.to_parquet(f'{save_dir}test_predictions.pq')
