@@ -54,6 +54,9 @@ df_collocated['sss_anom'] = df_collocated['sss_cci'] - df_collocated['sss_clim']
 df_collocated['chl_anom'] = df_collocated['chl_globcolour'] - df_collocated['chl_clim']
 df_collocated['ssh_anom'] = df_collocated['ssh_sla'] - df_collocated['ssh_clim']
 df_collocated['mld_anom'] = np.log10(df_collocated['mld_dens_soda'] + 1e-5) - df_collocated['mld_clim']
+
+df_collocated = df_collocated.fillna(df_collocated.mean())  # fill NaNs with mean of each column
+
 print(df_collocated.duplicated(subset=['lat', 'lon']).sum())
 
 from fco2models.ueval import load_models, print_loss_info
