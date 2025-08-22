@@ -42,6 +42,9 @@ mask_train, mask_val, mask_test = make_monthly_split(df)
 df_train = df[df.expocode.map(mask_train)]
 df_val = df[df.expocode.map(mask_val)]
 df_test = df[df.expocode.map(mask_test)]
+assert df_val.expocode.isin(df_test.expocode).sum() == 0, "expocode ids overlap between validation and test sets"
+assert df_train.expocode.isin(df_val.expocode).sum() == 0, "expocode ids overlap between train and validation sets"
+assert df_train.expocode.isin(df_test.expocode).sum() == 0, "expocode ids overlap between train and test sets"
 print(df_train.fco2rec_uatm.max(), df_train.fco2rec_uatm.min())
 
 
@@ -88,12 +91,14 @@ train_ds_norm, val_ds_norm, test_ds_norm = normalize_dss([train_ds.copy(), val_d
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
 
 # CHECK THAT STATS ARE THE SAME AS IN TRAINING
-assert np.allclose(train_stats['maxs'], params['train_maxs'], atol=1e0)
-assert np.allclose(train_stats['mins'], params['train_mins'], atol=1e0)
-assert np.allclose(train_stats['means'], params['train_means'], atol=1e0)
-assert np.allclose(train_stats['stds'], params['train_stds'], atol=1e0)
-print(train_stats['maxs'])
-print(params['train_maxs'])
+assert np.allclose(train_stats['maxs'], params['train_maxs'])
+assert np.allclose(train_stats['mins'], params['train_mins'])
+assert np.allclose(train_stats['means'], params['train_means'])
+assert np.allclose(train_stats['stds'], params['train_stds'])
+print(train_stats['means'])
+print(params['train_means'])
+print(train_stats['stds'])
+print(params['train_stds'])
 
 # Use ddim for inference
 ddim_scheduler = DDIMScheduler(
@@ -127,13 +132,13 @@ def rescale_samples(samples_norm, params):
 
 w=None
 #model.set_w(w)
-print("Denoise validation set")
-val_samples_norm = denoise_samples(val_ds_norm, model, ddim_scheduler, n_rec)
-val_samples = rescale_samples(val_samples_norm, params).reshape(-1, n_rec, 64)
+#print("Denoise validation set")
+#val_samples_norm = denoise_samples(val_ds_norm, model, ddim_scheduler, n_rec)
+#val_samples = rescale_samples(val_samples_norm, params).reshape(-1, n_rec, 64)
 
-print("Denoise training set")
-train_samples_norm = denoise_samples(train_ds_norm, model, ddim_scheduler, n_rec)
-train_samples = rescale_samples(train_samples_norm, params).reshape(-1, n_rec, 64)
+#print("Denoise training set")
+#train_samples_norm = denoise_samples(train_ds_norm, model, ddim_scheduler, n_rec)
+#train_samples = rescale_samples(train_samples_norm, params).reshape(-1, n_rec, 64)
 
 print("Denoise test set")
 test_samples_norm = denoise_samples(test_ds_norm, model, ddim_scheduler, n_rec)
@@ -159,12 +164,12 @@ def concat_to_dataframe(df, samples_df):
     df_pred = df_pred.reset_index()
     return df_pred
 
-val_samples_df = samples_to_df(val_samples, val_index)
-train_samples_df = samples_to_df(train_samples, train_index)
+#val_samples_df = samples_to_df(val_samples, val_index)
+#train_samples_df = samples_to_df(train_samples, train_index)
 test_samples_df = samples_to_df(test_samples, test_index)
 
-df_val = concat_to_dataframe(df_val, val_samples_df)
-df_train = concat_to_dataframe(df_train, train_samples_df)
+#df_val = concat_to_dataframe(df_val, val_samples_df)
+#df_train = concat_to_dataframe(df_train, train_samples_df)
 df_test = concat_to_dataframe(df_test, test_samples_df)
 
 def get_df_err_stats(df):
@@ -184,6 +189,24 @@ def get_df_err_stats(df):
     r2 = r2_score(truth, mean)
     mae = mean_absolute_error(truth, mean)
     bias = (truth - mean).mean()
+    # S: (n_rows, n_samp) samples from your model. Replace df.values with your samples.
+    S = df.loc[mask, sample_cols].values            # shape (n_rows, 50) in your real case
+    y = truth                # shape (n_rows,)
+
+    levels = np.arange(0.1, 1.0, 0.1)  # 10%,...,90% central coverage
+
+    q_lo = np.quantile(S, (1 - levels)/2, axis=1).T   # shape (n_rows, len(levels))
+    q_hi = np.quantile(S, 1 - (1 - levels)/2, axis=1).T
+
+    covered = ((y[:, None] >= q_lo) & (y[:, None] <= q_hi)).mean(axis=0)  # empirical coverage
+    cal_dict = {f"{int(100*l)}%": c for l, c in zip(levels, covered)}
+    
+    # E|S - y|
+    term1 = np.mean(np.abs(S - y[:, None]), axis=1)
+    # 0.5 * E|S - S'|
+    term2 = 0.5 * np.mean(np.abs(S[:, None, :] - S[:, :, None]), axis=(1,2))
+    crps = term1 - term2                      # one score per row (lower is better)
+    crps_mean = crps.mean()
 
     return dict({
         'rmse': rmse,
@@ -198,26 +221,28 @@ def get_df_err_stats(df):
         'r2_interval_width_error': r2_score((truth-mean)**2, df.loc[mask, sample_cols].var(axis=1)),
         'corr_variance_error': pearsonr((truth-mean)**2, df.loc[mask, sample_cols].var(axis=1))[0],
         'ratio_error_interval_width': (mae/(high-low)).mean(),
+        'calibration': cal_dict,
+        'crps': crps_mean
     })
 
-val_err_stats = get_df_err_stats(df_val)
-train_err_stats = get_df_err_stats(df_train)
+#val_err_stats = get_df_err_stats(df_val)
+#train_err_stats = get_df_err_stats(df_train)
 test_err_stats = get_df_err_stats(df_test)
 
 print("Validation error statistics:")
-for key, value in val_err_stats.items():
-    print(f"{key}: {value:.4f}")
+#for key, value in val_err_stats.items():
+#    print(f"{key}: {value:.4f}")
 print("\nTraining error statistics:")
-for key, value in train_err_stats.items():
-    print(f"{key}: {value:.4f}")
+#for key, value in train_err_stats.items():
+#    print(f"{key}: {value:.4f}")
 print("\nTest error statistics:")
 for key, value in test_err_stats.items():
-    print(f"{key}: {value:.4f}")
+    print(f"{key}: {value}")
 
 # Save the results
 results = {
-    'val_err_stats': val_err_stats,
-    'train_err_stats': train_err_stats,
+    #'val_err_stats': val_err_stats,
+    #'train_err_stats': train_err_stats,
     'test_err_stats': test_err_stats,
     'w': w,
     'n_rec':n_rec,
@@ -230,6 +255,6 @@ with open(path+f'error_stats_{n_rec}recs.json', 'w') as f:
     json.dump(results, f, indent=4)
 
 # Save the dataframes
-val_samples_df.to_parquet(path + 'val_samples.pq')
-train_samples_df.to_parquet(path + 'train_samples.pq')
-test_samples_df.to_parquet(path + 'test_samples.pq')
+#val_samples_df.to_parquet(path + 'val_samples.pq')
+#train_samples_df.to_parquet(path + 'train_samples.pq')
+df_test.to_parquet(path + 'test_samples.pq')
