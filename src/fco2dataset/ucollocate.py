@@ -115,6 +115,9 @@ def get_zarr_data(year='2022'):
         varnames_map = VARIABLES[key]
         full_path = os.path.join(BASE_URL, path)
         ds = xr.open_zarr(full_path, group=year)
+        if key == "chl":
+            ds["lon"] = ds["lon"] % 360
+            ds = ds.sortby("lon")
         ds = ds[list(varnames_map)].rename(**varnames_map)
         dss[key] = ds
     
