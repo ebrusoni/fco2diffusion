@@ -330,7 +330,7 @@ def infer_patch_gpu(
 ):
     """Torch-only version of the original NumPy routine (logic unchanged)."""
     
-    print(device)
+    # print(device)
     # ───────────────────────── context & padding ───────────────────────────
     context_ds_np = get_patch_ds(params, patch_ix, patch_size, date,
                                  nside=nside, dss=dss).astype(np.float32)
@@ -388,7 +388,7 @@ def infer_patch_gpu(
     model.to(device).eval()
 
     # ───────────────────────────── main loop ───────────────────────────────
-    print(steps)
+    # print(steps)
     for step_no, t in enumerate(steps):
         ring_pass = (step_no % 3 == 0)
         vert_pass = (step_no % 3 == 2)        # i.e. step_no % 2 and not ring
@@ -542,38 +542,32 @@ ddim_scheduler = DDIMScheduler(
     num_train_timesteps=noise_scheduler.config.num_train_timesteps,
     beta_schedule=noise_scheduler.config.beta_schedule,
     clip_sample_range=noise_scheduler.config.clip_sample_range,
-    #timestep_spacing="trailing"
     )
-timesteps = np.concatenate((np.arange(0, 40, 2), np.arange(40, 1000, 20)))[::-1]
-print(timesteps)
- # /opt/conda/lib/python3.10/site-packages/diffusers/schedulers/scheduling_ddim.py, line 335 for passing inference steps as list
+#timesteps = np.concatenate((np.arange(0, 40, 2), np.arange(40, 1000, 20)))[::-1]
+#/opt/conda/lib/python3.10/site-packages/diffusers/schedulers/scheduling_ddim.py, line 335 for passing inference steps as list
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 n_steps = 50
-ddim_scheduler.set_timesteps(n_steps, steps=None)
-n=10
+ddim_scheduler.set_timesteps(n_steps, device=device)
+n=5
 nside = 2**10
 npix = hp.nside2npix(nside)
 face_pixs = npix//12
-num_subfaces = 1 # number of subfaces should a power of 4
+num_subfaces = 4 # number of subfaces should a power of 4
 patch_size = face_pixs // num_subfaces
-#print(f"Number of patches: {n_patches}")
 print(f"Patch size: {patch_size}")
 
-patch_ix = 2
+patch_ix = 31
 samples = []
-start_date ='2022-06-01' 
-date_range = pd.date_range(start=start_date, end='2022-06-03', freq='D')
+start_date ='2022-01-01' 
+date_range = pd.date_range(start=start_date, end='2022-03-01', freq='D')
 dfs = []
 dfs_cond = []
 date_range_loop = tqdm(date_range, desc="Processing dates")
-#start_sample = infer_patch(model, ddim_scheduler, params, patch_ix, patch_size, date_range[0], nside=nside, 
-#                           dss=None, jump=None, n_samples=1, t_loop=None)[:, :, 0]
 start_sample = None
 timesteps = ddim_scheduler.timesteps
-#print(timesteps[n_steps // 2:])
-#print(timesteps[n_steps // 2 - 1])
+
 for date in date_range_loop:
-    #print(date)
     t_loop = None if date == pd.Timestamp(start_date) else timesteps[n_steps // 2:]
     sample = infer_patch_gpu(model, ddim_scheduler, params, patch_ix, patch_size, date, nside=nside, 
                         dss=None, jump=None, n_samples=n, t_loop=t_loop, start_sample=start_sample)
@@ -581,7 +575,7 @@ for date in date_range_loop:
     lat = sample[:, :, -4]
     lon = sample[:, :, -3]
     patch_pix = sample[:, :, -2].astype(int)
-    #ring_pix = sample[:, :, -1]
+    seamask = sample[:, :, -5].astype(bool)
     
     # Base DataFrame with index
     index = pd.MultiIndex.from_arrays([
@@ -593,32 +587,24 @@ for date in date_range_loop:
     # Prepare sample columns
     sample_cols = [f"sample_{i}" for i in range(n)] #+ params['predictors']
     sample_data = sample[:, :, :n].reshape(-1, n).copy()
-    #n_cond = sample.shape[2] - n - 5
-    #context = sample[:, :, n:-5].reshape(-1, n_cond)
-    #print(sample_data[0, :])
     
-    # De-normalize xco2 and apply correction
+    # De-normalize xco2, rescale and apply xco2 correction
     xco2_ix = params['predictors'].index('xco2') + 1
     xco2 = sample[:, :, xco2_ix + n - 1].flatten()
     xco2 = xco2 * params['train_stds'][xco2_ix] + params['train_means'][xco2_ix]
     sample_data[:, :n] = sample_data[:,:n] * params['train_stds'][0] + params['train_means'][0] + xco2[:, np.newaxis]
     
     # Create MultiIndex columns (date, sample_x)
-    columns = pd.MultiIndex.from_product([[date], sample_cols])
-    #cond_cols = params['predictors']
-    #cond_columns = pd.MultiIndex.from_product([[date], cond_cols])
+    columns = pd.MultiIndex.from_product([[date.strftime('%Y-%m-%d')], sample_cols])
     
     # Build DataFrame and append
     df = pd.DataFrame(sample_data, index=index, columns=columns)
-    #df2 = pd.DataFrame(context, index=index, columns= cond_columns)
-    #print(df.head())
     dfs = df if date == pd.Timestamp(start_date) else pd.concat([dfs, df], axis=1)
-    #dfs_cond.append(df2)
     
+    # renoise sample for next day conditioning
     start_sample = torch.from_numpy(sample[:, :, :n])
-    print(timesteps[n_steps // 2 - 1])
     start_sample = ddim_scheduler.add_noise(start_sample, torch.randn_like(start_sample), timesteps[n_steps // 2 - 1]).numpy()
     date_range_loop.set_postfix(date=date.strftime('%Y-%m-%d'), shape=df.shape)
 
-dfs.to_parquet(f'{save_path}nwamerica.pq')
-#pd.concat(dfs_cond, axis=1).to_parquet(f'{save_path}testcond.pq')
+dfs["seamask"] = seamask.flatten()
+dfs.to_parquet(f'{save_path}papagayo.pq')
