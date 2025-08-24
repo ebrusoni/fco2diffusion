@@ -87,8 +87,8 @@ def do_step_loader(model, noise_scheduler, dataloader, t, device, jump, eta):
 
 def do_random_rot(lon, lat, nest=True):
         random_zrotation = np.random.random() * 360
-        random_yrotation = np.random.random() * 5
-        random_xrotation = np.random.random() * 5
+        #random_yrotation = np.random.random() * 5
+        #random_xrotation = np.random.random() * 5
         rot = hp.Rotator(rot=(random_zrotation, 0, 0), eulertype="ZYX") # rotate only around the z-axis, so we do not mix equatirial and polar coordinates
         lon_rot, lat_rot = rot(lon, lat, lonlat=True)
         m_rot = hp.ang2pix(nside, lon_rot, lat_rot, nest=nest, lonlat=True)
@@ -363,9 +363,9 @@ def infer_patch_with_rotations_gpu(
         noise_lvl = 1
         step=-2
         noise_scheduler = ddim_scheduler
-        t_loop = torch.cat([noise_scheduler.timesteps[::jump], torch.arange(noise_lvl-1, -1, step)]) 
+        t_loop = torch.cat([noise_scheduler.timesteps[::jump], torch.arange(noise_lvl, -1, step).to(device)])
         last_step = len(noise_scheduler.timesteps[::jump]) - 1
-        last_scheduler.set_timesteps(noise_lvl // step, steps=torch.arange(noise_lvl-1, -1, step))
+        last_scheduler.set_timesteps(noise_lvl // step, steps=torch.arange(noise_lvl, -1, step), device=device)
         for step_no, t in enumerate(
             tqdm(t_loop, desc=f"sample {i}")
         ):
@@ -456,7 +456,7 @@ def infer_patch_with_rotations_gpu(
                 ]
                 cds_t[fpix_rot_faces.reshape(-1), 0] = out_vals
                 if step_no == last_step:
-                    cds_t[:, 0] = noise_scheduler.add_noise(cds_t[:, 0], torch.randn_like(cds_t[:, 0]).to(device), torch.tensor(noise_lvl - 1))
+                    cds_t[:, 0] = noise_scheduler.add_noise(cds_t[:, 0], torch.randn_like(cds_t[:, 0]).to(device), torch.tensor(noise_lvl).to(device))
                     noise_scheduler = last_scheduler
 
         cds_all_t[:, i] = cds_t[:, 0]
@@ -497,12 +497,13 @@ ddim_scheduler = DDIMScheduler(
 # idx = (self.timesteps == timestep).nonzero(as_tuple=True)[0].item()
 # prev_timestep = self.timesteps[idx + 1] if idx+1 < self.num_inference_steps else -1
 ## prev_timestep = timestep - self.config.num_train_timesteps // self.num_inference_steps
-ddim_scheduler.set_timesteps(50, steps=None)
-n=5
-df = infer_patch_with_rotations_gpu(model, ddim_scheduler, params, date, nside=nside, jump=None, n_samples=n)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+ddim_scheduler.set_timesteps(50, device=device, steps=None)
+n=1
+df = infer_patch_with_rotations_gpu(model, ddim_scheduler, params, date, nside=nside, jump=None, n_samples=n, device=device)
 sample_cols = [f"sample_{i}" for i in range(n)]
 df['xco2'] = df['xco2'] * params['train_stds'][11] + params['train_means'][11]
-df[sample_cols] =df[sample_cols] * params['train_stds'][0] + params['train_means'][0] + df['xco2'].values[:, np.newaxis]
-df.to_parquet(f'{save_path}test.pq')
+df[sample_cols] = df[sample_cols] * params['train_stds'][0] + params['train_means'][0] + df['xco2'].values[:, np.newaxis]
+df.to_parquet(f'{save_path}global.pq')
 
 
