@@ -401,8 +401,11 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_lo
             selection = df[['lat', 'lon']].to_xarray()
             df['seamask'] = masks.seamask.sel(selection, method='nearest')
             
-        logger.info("set fco2 values outside seamask to NaN")
-        df.loc[df.seamask==0, 'fco2rec_uatm'] = np.nan
+        if with_target:
+            if with_log:
+                logger.info("set fco2 values outside seamask to NaN")
+            df.loc[df.seamask==0, 'fco2rec_uatm'] = np.nan
+            
         if add_clim:
             if with_log:
                 logger.info("adding climatology data")
@@ -774,5 +777,3 @@ def impute_df(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
         return group
 
     return out.groupby('expocode', sort=False, group_keys=False).apply(_interp)
-
-    
