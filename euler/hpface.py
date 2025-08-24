@@ -312,7 +312,7 @@ from tqdm import tqdm
 
 def infer_patch_gpu(
     model,
-    noise_scheduler,
+    ddim_scheduler,
     params,
     patch_ix,
     patch_size,
@@ -377,13 +377,27 @@ def infer_patch_gpu(
     order   = torch.argsort(
                  torch.as_tensor(ring_pix.flatten(), device=device))
     inverse = torch.argsort(order)
-
+    
+    last_scheduler = DDIMScheduler(
+        num_train_timesteps=ddim_scheduler.config.num_train_timesteps,
+        beta_schedule=ddim_scheduler.config.beta_schedule,
+        clip_sample_range=ddim_scheduler.config.clip_sample_range,
+        #timestep_spacing="trailing"
+    )
+    
     # timesteps
     if t_loop is None:
-        steps = noise_scheduler.timesteps[::jump]
+        steps = ddim_scheduler.timesteps[::jump]
     else:
         steps = t_loop
-    steps = list(steps)                       # ensure we can iterate twice
+    #steps = list(steps)                       # ensure we can iterate twice
+
+    noise_lvl = 40
+    step=-2
+    noise_scheduler = ddim_scheduler
+    last_step = len(steps) - 1
+    steps = torch.cat([steps, torch.arange(noise_lvl, -1, step).to(device)])
+    last_scheduler.set_timesteps(noise_lvl // step, steps=torch.arange(noise_lvl, -1, step), device=device)
 
     model.to(device).eval()
 
@@ -517,6 +531,10 @@ def infer_patch_gpu(
 
             sample_context[rows_idx, cols_idx, samp_idx] = imgs
 
+        if step_no == last_step:
+            sample_context[:, :, :n_samples] = noise_scheduler.add_noise(sample_context[:, :, :n_samples], torch.randn_like(sample_context[:, :, :n_samples]).to(device), torch.tensor(noise_lvl).to(device))
+            noise_scheduler = last_scheduler
+
     # ───────────────────────────── return ─────────────────────────────────
     result = sample_context[segment_len:-segment_len,
                             segment_len:-segment_len, :].cpu().numpy()
@@ -566,6 +584,8 @@ dfs_cond = []
 date_range_loop = tqdm(date_range, desc="Processing dates")
 start_sample = None
 timesteps = ddim_scheduler.timesteps
+
+
 
 for date in date_range_loop:
     t_loop = None if date == pd.Timestamp(start_date) else timesteps[n_steps // 2:]
