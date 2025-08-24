@@ -431,7 +431,7 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_lo
             logger.info("removing xco2 levels from fco2rec_uatm")
             df['fco2rec_uatm'] = df['fco2rec_uatm'] - df['xco2']
     
-        if bound:
+        if bound and with_target:
             if with_log:
                 logger.info("replacing outliers with Nans, fco2rec_uatm > 400")
             # fco2rec_uatm_95th = df['fco2rec_uatm'].quantile(0.95)
@@ -728,3 +728,51 @@ def get_context_mask(dss, logger=None):
         logger.info(f"Number of samples after filtering: {np.sum(not_nan_mask)}")
     return masks
 
+import pandas as pd
+from pandas.api.types import is_numeric_dtype
+
+def impute_df(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """
+    Linearly interpolate missing values in `cols` within each 'expocode' group.
+    Returns a new DataFrame; original is unchanged.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input dataframe containing an 'expocode' column.
+    cols : list[str]
+        Columns to interpolate. Must all be numeric.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with interpolated values in `cols`, per 'expocode'.
+
+    Raises
+    ------
+    KeyError
+        If 'expocode' or any of the requested columns are missing.
+    TypeError
+        If any column in `cols` is not numeric.
+    """
+    if 'expocode' not in df.columns:
+        raise KeyError("DataFrame must contain an 'expocode' column.")
+
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise KeyError(f"Missing columns in DataFrame: {missing}")
+
+    non_numeric = [c for c in cols if not is_numeric_dtype(df[c])]
+    if non_numeric:
+        raise TypeError(f"Columns must be numeric for interpolation: {non_numeric}")
+
+    out = df.copy()
+
+    def _interp(group: pd.DataFrame) -> pd.DataFrame:
+        for c in cols:
+            group[c] = group[c].interpolate(method='linear', limit_direction='both')
+        return group
+
+    return out.groupby('expocode', sort=False, group_keys=False).apply(_interp)
+
+    
