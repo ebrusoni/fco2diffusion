@@ -24,13 +24,12 @@ print("Model loaded")
 # load data
 df = pd.read_parquet(DATA_PATH + "SOCAT_1982_2021_grouped_colloc_augm_bin.pq")
 df = prep_df(df, bound=True)[0]
-# calculate anomalies from climatologies and measurments
 df['sst_clim'] += 273.15
 df['sst_anom'] = df['sst_cci'] - df['sst_clim']
 df['sss_anom'] = df['sss_cci'] - df['sss_clim']
 df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
 df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
-df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim']
+df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim'] # mixed-layer depth climatology is in log scale
 # map expocode column to int
 expocode_map = df['expocode'].unique()
 expocode_map = {expocode: i for i, expocode in enumerate(expocode_map)}
@@ -48,6 +47,8 @@ assert df_train.expocode.isin(df_val.expocode).sum() == 0, "expocode ids overlap
 assert df_train.expocode.isin(df_test.expocode).sum() == 0, "expocode ids overlap between train and test sets"
 print(df_train.fco2rec_uatm.max(), df_train.fco2rec_uatm.min())
 
+print(f"train df shape: {df_train.shape}, val df shape: {df_val.shape}, test df shape: {df_test.shape}")
+
 
 target = "fco2rec_uatm"
 predictors = params["predictors"]
@@ -56,7 +57,7 @@ coords = ['expocode_id', 'window_id']
 all_cols = predictors + coords
 cols = [target] + all_cols
 
-train_stats = get_stats_df(df_train, [target] + predictors) # get training statistics (mean, std, min, max for every predictor and the target)
+train_stats = get_stats_df(df_train, [target] + predictors) # get training set stats (mean, std, min, max)
 
 
 def prep_for_eval(df, predictors, coords):
@@ -64,13 +65,13 @@ def prep_for_eval(df, predictors, coords):
     all_cols = [target] + predictors + coords
     n_coords = len(coords)
     segment_df = df.groupby("expocode").apply(
-        lambda x: get_segments(x, all_cols), # get contiguous segments in each track
+        lambda x: get_segments(x, all_cols),
         include_groups=False,
     )
     ds = np.concatenate(segment_df.values, axis=0)
     ds_input = ds[:, :-n_coords, :]  # remove expocode and window_id
     ds_index = ds[:, -n_coords:, :]
-    return ds_input, ds_index # use ds_index (expocode and window_id) for indexing later when assigning back to the dataframe
+    return ds_input, ds_index # index is used when rearranging the samples back in the dataframe
 
 
 train_ds, train_index = prep_for_eval(df_train, predictors, coords)
@@ -78,7 +79,8 @@ val_ds, val_index = prep_for_eval(df_val, predictors, coords)
 test_ds, test_index = prep_for_eval(df_test, predictors, coords)
 
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
-train_context_mask, val_context_mask, test_context_mask = get_context_mask([train_ds, val_ds, test_ds]) # mask out invalid segments for faster inference
+# remove invalid entries for faster processing
+train_context_mask, val_context_mask, test_context_mask = get_context_mask([train_ds, val_ds, test_ds]) 
 train_ds, train_index = train_ds[train_context_mask], train_index[train_context_mask]
 val_ds, val_index = val_ds[val_context_mask], val_index[val_context_mask]
 test_ds, test_index = test_ds[test_context_mask], test_index[test_context_mask]
@@ -86,31 +88,34 @@ print(f"removing context nans")
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
 
 mode = params["mode"]
-train_ds_norm, val_ds_norm, test_ds_norm = normalize_dss([train_ds.copy(), val_ds.copy(), test_ds.copy()], train_stats, mode, ignore=[]) # normalization 
+train_ds_norm, val_ds_norm, test_ds_norm = normalize_dss([train_ds.copy(), val_ds.copy(), test_ds.copy()], train_stats, mode, ignore=[])
 
 # count nans in first column of the dataset
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
 
-# CHECK THAT STATS ARE THE SAME AS IN TRAINING (to be sure that preprocessing and normalization are equal)
+# CHECK THAT STATS ARE THE SAME AS IN TRAINING (to be sure that preprocessing was equal)
 assert np.allclose(train_stats['maxs'], params['train_maxs'])
 assert np.allclose(train_stats['mins'], params['train_mins'])
 assert np.allclose(train_stats['means'], params['train_means'])
 assert np.allclose(train_stats['stds'], params['train_stds'])
+print(train_stats['means'])
+print(params['train_means'])
+print(train_stats['stds'])
+print(params['train_stds'])
 
 # Use ddim for inference
 ddim_scheduler = DDIMScheduler(
     num_train_timesteps=noise_scheduler.config.num_train_timesteps,
     beta_schedule=noise_scheduler.config.beta_schedule,
     clip_sample_range=noise_scheduler.config.clip_sample_range,
-    #timestep_spacing="trailing"
     )
-ddim_scheduler.set_timesteps(50) # fifty equally-spaced inference timesteps
+ddim_scheduler.set_timesteps(50) # 50 equally-spaced inference steps
 
 n_rec=50 # number of samples to generate
 eta=0
 def denoise_samples(ds_norm, model, scheduler, n_rec):
     context = ds_norm[:, 1:, :] # remove target fco2 column
-    context_ds = torch.from_numpy(np.repeat(context, n_rec, axis=0)).float() # repeat context for each sample as they are independent
+    context_ds = torch.from_numpy(np.repeat(context, n_rec, axis=0)).float()
     print("context_ds shape: ", context_ds.shape)
     context_loader = DataLoader(context_ds, batch_size=1028, shuffle=False)
     with torch.no_grad():
@@ -144,7 +149,7 @@ test_samples = rescale_samples(test_samples_norm, params).reshape(-1, n_rec, 64)
 sample_cols = [f"sample_{i}" for i in range(n_rec)]
 def samples_to_df(samples, index):
     """
-    Convert samples and index to a pandas DataFrame indexed by expocode_id and window_id.
+    function to rearrange samples in dataframe indexed by window_id and expocode_id
     """
     samples_index = np.concatenate((samples, index), axis=1)
     n_samples, n_cols, n_bins = samples_index.shape
@@ -158,6 +163,9 @@ def samples_to_df(samples, index):
     return df
 
 def concat_to_dataframe(df, samples_df):
+    """
+    Concatenates the original DataFrame with the samples DataFrame.
+    """
     df.set_index(['expocode_id', 'window_id'], inplace=True)
     df_pred = pd.concat([df, samples_df], axis=1)
     df_pred = df_pred.reset_index()
@@ -175,26 +183,32 @@ def get_df_err_stats(df):
     seamask = df.seamask.astype(bool)
     fco2_nans = ~df.fco2rec_uatm.isna()
     pred_nans = ~df.sample_0.isna()
-    mask = seamask & fco2_nans & pred_nans # mask out invalid entries
+    mask = seamask & fco2_nans & pred_nans
+    
+    print(f"save pred_nans to pq") # for matching MLP and diffusion test sets during MLP validation
+    pd.DataFrame(mask).to_parquet(f"{save_dir}pred_nans.pq")
+    
+    print(f"no. test samples {mask.sum()}") # number of test samples after filtering
     
     truth = df.loc[mask, "fco2rec_uatm"].values
     mean = df.loc[mask, sample_cols].mean(axis=1).values
+    print(f"fco2 climatology RMSE: {root_mean_squared_error(truth, df.loc[mask, 'co2_clim8d'])}") # climatology error (sanity check)
     
-    # coverage
+    #coverage
     low = df.loc[mask, sample_cols].min(axis=1).values
     high = df.loc[mask, sample_cols].max(axis=1).values
     coverage = (truth >= low) & (truth <= high)
-
+    
     # RMSE
     rmse = root_mean_squared_error(truth, mean)
     # R2
     r2 = r2_score(truth, mean)
     # MAE
     mae = mean_absolute_error(truth, mean)
-    # Bias
+    # BIAS
     bias = (truth - mean).mean()
-
-    # Central Calibration Scores for 10% wide intervals
+    
+    # Central Coverage Calibration
     # S: (n_rows, n_samp) samples from your model. Replace df.values with your samples.
     S = df.loc[mask, sample_cols].values            # shape (n_rows, 50) in your real case
     y = truth                # shape (n_rows,)
@@ -207,7 +221,7 @@ def get_df_err_stats(df):
     covered = ((y[:, None] >= q_lo) & (y[:, None] <= q_hi)).mean(axis=0)  # empirical coverage
     cal_dict = {f"{int(100*l)}%": c for l, c in zip(levels, covered)}
     
-    # CRPS score 
+    # CRPS
     # E|S - y|
     term1 = np.mean(np.abs(S - y[:, None]), axis=1)
     # 0.5 * E|S - S'|
