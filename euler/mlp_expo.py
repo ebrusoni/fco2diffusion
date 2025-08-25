@@ -77,6 +77,7 @@ samples = get_samples_ensemble(df_test.copy(), models['sota_ensemble'])
 params = models['sota_ensemble']['params']
 samples = rescale(samples.reshape(-1, 1), params, params['mode']).reshape(20, -1).T
 samples += df_test['xco2'].values[:, None]
+df_test['fco2rec_uatm'] += df_test['xco2'] # remove xco2 offset
 
 mlp_pred_cols = [f'mlp_{i}' for i in range(samples.shape[1])]
 df_test.loc[:, mlp_pred_cols] = samples
