@@ -39,9 +39,6 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
     
     loss_fn = nn.MSELoss()
     
-    # Initialize wandb
-    # wandb.init(project="conditional-diffusion")
-    # wandb.watch(model)
     train_losses = []
     val_losses = []
     for epoch in range(old_epoch, num_epochs):
@@ -50,14 +47,13 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
             class_embedder.train()
         epoch_loss = 0.0
         progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")
-        # noise = torch.randn((batch_size,1,64)).to(device)
         
         for batch in progress_bar:
             batch = batch[0].to(device)
-            target = batch[:, 0:1, :]
-            context = batch[:, 1:pos_encodings_start, :]
-            pos_encodings = batch[:, pos_encodings_start:, :]
-            
+            target = batch[:, 0:1, :] # first column is the target fco2
+            context = batch[:, 1:pos_encodings_start, :] # context is the remote sensing data
+            pos_encodings = batch[:, pos_encodings_start:, :] # position encodings are the remaining columns (not used anymore)
+
             noise = torch.randn_like(target).to(device).float()
             # Sample a random timestep for each image
             timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (batch.shape[0],), device=device).long()
@@ -72,7 +68,6 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
             noisy_input = noisy_input.to(device).float()
             
             # Get the model prediction
-            #class_labels = None if pos_encodings_start is None else class_embedder(pos_encodings.int())
             noise_pred = model(noisy_input, timesteps, return_dict=False)[0]
 
             # Calculate the loss
@@ -93,7 +88,7 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
             # batch.detach()
         train_losses.append(epoch_loss / len(train_dataloader))
         print(f"Epoch {epoch+1} Loss: {epoch_loss / len(train_dataloader):.6f}")
-        check_gradients(model)
+        check_gradients(model) # function to check for exploding/vanishing gradients
         print(f"Learning rate: {lr_scheduler.get_last_lr()}")
 
 
@@ -103,7 +98,7 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
             class_embedder.eval()
         t_tot = noise_scheduler.config.num_train_timesteps
         val_losses_t = []
-        for t in range(0, t_tot, t_tot//10):
+        for t in range(0, t_tot, t_tot//10): # take validation scores for multiple timesteps t, to check convergence at multiple noise levels
             val_loss = 0.0
             for batch in val_dataloader:
                 timesteps = torch.full((batch[0].shape[0],), t, device=device, dtype=torch.long)
@@ -117,7 +112,7 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
         val_losses.append(val_losses_t)
 
         if save_model_path and (epoch+1) % 10 == 0:
-            torch.save(model.state_dict(), save_model_path+f"e_{epoch+1}.pt")
+            torch.save(model.state_dict(), save_model_path+f"e_{epoch+1}.pt") # save model every 10th epoch
 
     # save model checkpoint
     if save_model_path:
@@ -168,25 +163,22 @@ def full_denoise(model, noise_scheduler, context_loader, jump=None, pos_encoding
         context = context_batch.to(device)
         context = context[:, :pos_encodings_start, :]
         pos_encodings = context_batch[:, pos_encodings_start:, :]
-        # context = context.unsqueeze(0)
         
         sample = torch.randn((context.shape[0], 1, context.shape[2])).to(device)
         mask = torch.ones_like(sample).float().to(device)
         sample_context = torch.zeros(context.shape[0], context.shape[1] + 2, context.shape[2]).to(device)
-        sample_context[:, 0:1, :] = sample
-        sample_context[:, 1:-1, :] = context
-        sample_context[:, -1:, :] = mask
+        sample_context[:, 0:1, :] = sample # will become fco2 estimate, start with noise
+        sample_context[:, 1:-1, :] = context # remote sensing conditioning
+        sample_context[:, -1:, :] = mask # all-one mask for inference, because we wish to predict the whole sequence
         if jump is not None:
             timestep = noise_scheduler.timesteps[::jump]
         else:
             timestep = noise_scheduler.timesteps
         for t in timestep:
             # concat noise, context and mask
-            sample_context[:, 0:1, :] = sample
+            sample_context[:, 0:1, :] = sample # replace sample with updated version in each iteration
             # Get model pred
             with torch.no_grad():
-                #class_labels = None if pos_encodings_start is None else pos_to_timestep(pos_encodings, noise_scheduler)
-                #print(t)
                 residual = model(sample_context, t, return_dict=False)[0]
 
             output_scheduler = noise_scheduler.step(residual, t, sample, eta=eta)
@@ -198,8 +190,7 @@ def full_denoise(model, noise_scheduler, context_loader, jump=None, pos_encoding
                     sample = noise_scheduler.add_noise(x_0, torch.randn_like(sample), t - jump)
             else:
                 # Update sample with step
-                sample = output_scheduler.prev_sample
-            # end_time = time.time()
+                sample = output_scheduler.prev_sample # this option is used when during inference with the diffusers DDIM sampler
             # update progress bar
             context_loader.set_postfix({"timestep":  t})
         context_batch.detach()
@@ -365,6 +356,7 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_lo
 
         if with_log:
             logger.info("adding positional and temporal encodings")
+        # positional and temporal encodings as described in 
         df['sin_day_of_year'] = np.sin(df['day_of_year']* np.pi / 365)
         df['cos_day_of_year'] = np.cos(df['day_of_year']* np.pi / 365)
         # normalize lons to range [-180, 180] from [0, 360]
@@ -373,13 +365,9 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_lo
         # embed lat and lon features
         df['sin_lon_cos_lat'] = np.sin(df['lon'] * np.pi / 180) * np.cos(df['lat'] * np.pi / 180)
         df['cos_lon_cos_lat'] = - np.cos(df['lon'] * np.pi / 180) * np.cos(df['lat'] * np.pi / 180)
-
         df['sin_lon'] = np.sin(df['lon'] * np.pi / 180)
         df['cos_lon'] = np.cos(df['lon'] * np.pi / 180)
-        df['is_north'] = df['lat'] > 0
     
-        #logger.info("clip values of fco2 between 0 and 400")
-        #df['fco2rec_uatm'] = df['fco2rec_uatm'].clip(lower=None, upper=400)
         if with_log:
             logger.info("add climatology data")
         co2_clim = xr.open_zarr('https://data.up.ethz.ch/shared/.gridded_2d_ocean_data_for_ML/co2_clim/prior_dfco2-lgbm-ens_avg-t46y720x1440.zarr/')
@@ -404,7 +392,7 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_lo
         if with_target:
             if with_log:
                 logger.info("set fco2 values outside seamask to NaN")
-            df.loc[df.seamask==0, 'fco2rec_uatm'] = np.nan
+            df.loc[df.seamask==0, 'fco2rec_uatm'] = np.nan # replace fco2 measurements in marginal seas with Nans
             
         if add_clim:
             if with_log:
@@ -432,14 +420,11 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_lo
         
         if with_target:
             logger.info("removing xco2 levels from fco2rec_uatm")
-            df['fco2rec_uatm'] = df['fco2rec_uatm'] - df['xco2']
+            df['fco2rec_uatm'] = df['fco2rec_uatm'] - df['xco2'] # remove atmospheric co2 trend
     
         if bound and with_target:
             if with_log:
                 logger.info("replacing outliers with Nans, fco2rec_uatm > 400")
-            # fco2rec_uatm_95th = df['fco2rec_uatm'].quantile(0.95)
-            # fco2rec_uatm_5th = df['fco2rec_uatm'].quantile(0.05)
-            # df['fco2rec_uatm'] = df['fco2rec_uatm'].clip(lower=fco2rec_uatm_5th, upper=fco2rec_uatm_95th)
             df.loc[df.fco2rec_uatm > 400, 'fco2rec_uatm'] = np.nan
         if index is not None:
             # set index to the given index
@@ -459,12 +444,7 @@ def quantize_positional_encodings(dfs, positional_encodings, num_bins, logger=No
         df[positional_encodings] = df[positional_encodings].clip(0, num_bins-1)
         res.append(df)
     return res
-    
-def get_augmentations(ds, aug_names):
-    """get augmentations for the dataset of shape (n_samples, n_features, n_bins)"""
-    if 'mirror' in aug_names:
-        # mirror the dataset along the first axis
-        ds = np.concatenate([ds, ds[:, :, ::-1]], axis=0)
+
 
 def normalize_dss(dss, stats, mode, logger=None, ignore=None):
     logger = make_logger(logger)
@@ -640,9 +620,7 @@ def perturb_fco2(segments, logger=None):
     return segments
     
 def get_segments_random(df, cols, num_windows=64, n=3):
-    """extraxt arrays of size num_windows from the dataframe df randomly"""
-
-
+    """extract arrays of size num_windows from the dataframe df randomly"""
     # Get the number of rows in the dataframe
     num_rows = df.shape[0]
 
@@ -651,7 +629,7 @@ def get_segments_random(df, cols, num_windows=64, n=3):
     elif num_rows == num_windows:
         starting_indices = [0] # Only one segment possible
     else:
-        starting_indices = np.random.randint(0, num_rows - num_windows, size=(num_rows // num_windows) * n)
+        starting_indices = np.random.randint(0, num_rows - num_windows, size=(num_rows // num_windows) * n) # draw random starting points
     # Ensure that starting indices are unique and sorted
     starting_indices = np.unique(starting_indices)
     num_segments = len(starting_indices)
