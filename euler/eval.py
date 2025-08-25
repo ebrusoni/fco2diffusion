@@ -24,6 +24,7 @@ print("Model loaded")
 # load data
 df = pd.read_parquet(DATA_PATH + "SOCAT_1982_2021_grouped_colloc_augm_bin.pq")
 df = prep_df(df, bound=True)[0]
+# calculate anomalies from climatologies and measurments
 df['sst_clim'] += 273.15
 df['sst_anom'] = df['sst_cci'] - df['sst_clim']
 df['sss_anom'] = df['sss_cci'] - df['sss_clim']
@@ -55,7 +56,7 @@ coords = ['expocode_id', 'window_id']
 all_cols = predictors + coords
 cols = [target] + all_cols
 
-train_stats = get_stats_df(df_train, [target] + predictors)
+train_stats = get_stats_df(df_train, [target] + predictors) # get training statistics (mean, std, min, max for every predictor and the target)
 
 
 def prep_for_eval(df, predictors, coords):
@@ -63,13 +64,13 @@ def prep_for_eval(df, predictors, coords):
     all_cols = [target] + predictors + coords
     n_coords = len(coords)
     segment_df = df.groupby("expocode").apply(
-        lambda x: get_segments(x, all_cols),
+        lambda x: get_segments(x, all_cols), # get contiguous segments in each track
         include_groups=False,
     )
     ds = np.concatenate(segment_df.values, axis=0)
     ds_input = ds[:, :-n_coords, :]  # remove expocode and window_id
     ds_index = ds[:, -n_coords:, :]
-    return ds_input, ds_index
+    return ds_input, ds_index # use ds_index (expocode and window_id) for indexing later when assigning back to the dataframe
 
 
 train_ds, train_index = prep_for_eval(df_train, predictors, coords)
@@ -77,7 +78,7 @@ val_ds, val_index = prep_for_eval(df_val, predictors, coords)
 test_ds, test_index = prep_for_eval(df_test, predictors, coords)
 
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
-train_context_mask, val_context_mask, test_context_mask = get_context_mask([train_ds, val_ds, test_ds])
+train_context_mask, val_context_mask, test_context_mask = get_context_mask([train_ds, val_ds, test_ds]) # mask out invalid segments for faster inference
 train_ds, train_index = train_ds[train_context_mask], train_index[train_context_mask]
 val_ds, val_index = val_ds[val_context_mask], val_index[val_context_mask]
 test_ds, test_index = test_ds[test_context_mask], test_index[test_context_mask]
@@ -85,20 +86,16 @@ print(f"removing context nans")
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
 
 mode = params["mode"]
-train_ds_norm, val_ds_norm, test_ds_norm = normalize_dss([train_ds.copy(), val_ds.copy(), test_ds.copy()], train_stats, mode, ignore=[])
+train_ds_norm, val_ds_norm, test_ds_norm = normalize_dss([train_ds.copy(), val_ds.copy(), test_ds.copy()], train_stats, mode, ignore=[]) # normalization 
 
 # count nans in first column of the dataset
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
 
-# CHECK THAT STATS ARE THE SAME AS IN TRAINING
+# CHECK THAT STATS ARE THE SAME AS IN TRAINING (to be sure that preprocessing and normalization are equal)
 assert np.allclose(train_stats['maxs'], params['train_maxs'])
 assert np.allclose(train_stats['mins'], params['train_mins'])
 assert np.allclose(train_stats['means'], params['train_means'])
 assert np.allclose(train_stats['stds'], params['train_stds'])
-print(train_stats['means'])
-print(params['train_means'])
-print(train_stats['stds'])
-print(params['train_stds'])
 
 # Use ddim for inference
 ddim_scheduler = DDIMScheduler(
@@ -107,14 +104,13 @@ ddim_scheduler = DDIMScheduler(
     clip_sample_range=noise_scheduler.config.clip_sample_range,
     #timestep_spacing="trailing"
     )
-ddim_scheduler.set_timesteps(50)
-
+ddim_scheduler.set_timesteps(50) # fifty equally-spaced inference timesteps
 
 n_rec=50 # number of samples to generate
 eta=0
 def denoise_samples(ds_norm, model, scheduler, n_rec):
-    context = ds_norm[:, 1:, :] # remove target column
-    context_ds = torch.from_numpy(np.repeat(context, n_rec, axis=0)).float()
+    context = ds_norm[:, 1:, :] # remove target fco2 column
+    context_ds = torch.from_numpy(np.repeat(context, n_rec, axis=0)).float() # repeat context for each sample as they are independent
     print("context_ds shape: ", context_ds.shape)
     context_loader = DataLoader(context_ds, batch_size=1028, shuffle=False)
     with torch.no_grad():
@@ -147,6 +143,9 @@ test_samples = rescale_samples(test_samples_norm, params).reshape(-1, n_rec, 64)
 
 sample_cols = [f"sample_{i}" for i in range(n_rec)]
 def samples_to_df(samples, index):
+    """
+    Convert samples and index to a pandas DataFrame indexed by expocode_id and window_id.
+    """
     samples_index = np.concatenate((samples, index), axis=1)
     n_samples, n_cols, n_bins = samples_index.shape
     samples_index_flat = np.full((n_samples*n_bins, n_cols), np.nan)
@@ -176,19 +175,26 @@ def get_df_err_stats(df):
     seamask = df.seamask.astype(bool)
     fco2_nans = ~df.fco2rec_uatm.isna()
     pred_nans = ~df.sample_0.isna()
-    mask = seamask & fco2_nans & pred_nans
+    mask = seamask & fco2_nans & pred_nans # mask out invalid entries
     
     truth = df.loc[mask, "fco2rec_uatm"].values
     mean = df.loc[mask, sample_cols].mean(axis=1).values
     
+    # coverage
     low = df.loc[mask, sample_cols].min(axis=1).values
     high = df.loc[mask, sample_cols].max(axis=1).values
     coverage = (truth >= low) & (truth <= high)
-    
+
+    # RMSE
     rmse = root_mean_squared_error(truth, mean)
+    # R2
     r2 = r2_score(truth, mean)
+    # MAE
     mae = mean_absolute_error(truth, mean)
+    # Bias
     bias = (truth - mean).mean()
+
+    # Central Calibration Scores for 10% wide intervals
     # S: (n_rows, n_samp) samples from your model. Replace df.values with your samples.
     S = df.loc[mask, sample_cols].values            # shape (n_rows, 50) in your real case
     y = truth                # shape (n_rows,)
@@ -201,6 +207,7 @@ def get_df_err_stats(df):
     covered = ((y[:, None] >= q_lo) & (y[:, None] <= q_hi)).mean(axis=0)  # empirical coverage
     cal_dict = {f"{int(100*l)}%": c for l, c in zip(levels, covered)}
     
+    # CRPS score 
     # E|S - y|
     term1 = np.mean(np.abs(S - y[:, None]), axis=1)
     # 0.5 * E|S - S'|
@@ -214,7 +221,7 @@ def get_df_err_stats(df):
         'r2': r2,
         'bias': bias,
         'coverage': coverage.mean(),
-        'samples_std': df.loc[:, sample_cols].std(axis=1).mean(),
+        'samples_std': df.loc[mask, sample_cols].std(axis=1).mean(),
         'avg_interval_width': (high-low).mean(),
         'avg_interval_width_std': (high-low).std(),
         'max_interval_width': (high-low).max(),
