@@ -8,7 +8,8 @@ import pandas as pd
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from diffusers import DDIMScheduler
+#from diffusers import DDIMScheduler
+from mydiffusers.scheduling_ddim import DDIMScheduler
 from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from scipy.stats import pearsonr
 from fco2models.models import Unet2DClassifierFreeModel, UNet2DModelWrapper, TSEncoderWrapper, UNet2DShipMix, UNet1DModelWrapper
@@ -178,6 +179,8 @@ test_samples_df = samples_to_df(test_samples, test_index)
 #df_val = concat_to_dataframe(df_val, val_samples_df)
 #df_train = concat_to_dataframe(df_train, train_samples_df)
 df_test = concat_to_dataframe(df_test, test_samples_df)
+#df_test[sample_cols] += df_test.xco2.values[:, None]
+#df_test['fco2rec_uatm'] += df_test.xco2
 
 def get_df_err_stats(df):
     seamask = df.seamask.astype(bool)

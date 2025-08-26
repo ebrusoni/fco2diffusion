@@ -1,7 +1,8 @@
 import torch
 import numpy as np
 import pandas as pd
-from diffusers import DDIMScheduler
+# from diffusers import DDIMScheduler
+from mydiffusers.scheduling_ddim import DDIMScheduler
 from utils import add_src_and_logger
 save_dir = None
 is_renkulab = True
@@ -323,4 +324,4 @@ def trim(df):
     
 ds = ds.groupby("expocode").apply(trim)
 print(f"shape ds: {ds.shape}")
-ds.to_parquet(f'{save_path}selection_imputed.pq')
+ds.to_parquet(f'{save_path}test_imputed.pq')

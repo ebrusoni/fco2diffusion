@@ -599,7 +599,8 @@ print("model loaded")
 print("predictors:", params['predictors'])
 date = pd.Timestamp('2022-10-04')
 
-from diffusers import DDIMScheduler
+#from diffusers import DDIMScheduler
+from mydiffusers.scheduling_ddim import DDIMScheduler
 #model.set_w(1) # set_w for guided models
 ddim_scheduler = DDIMScheduler(
     num_train_timesteps=noise_scheduler.config.num_train_timesteps,

@@ -475,7 +475,7 @@ def infer_patch_with_rotations_gpu(
                 # assign in rotated order
                 cds_t[fpix_rot_faces.reshape(-1), 0] = out_vals
                 
-                # if we reach the last step of the first inference round, add noise to the image and switch schedulers
+                # when we reach the last step of the first inference round, add noise to the image and switch schedulers
                 if step_no == last_step:
                     cds_t[:, 0] = noise_scheduler.add_noise(cds_t[:, 0], torch.randn_like(cds_t[:, 0]).to(device), torch.tensor(noise_lvl).to(device))
                     noise_scheduler = last_scheduler
@@ -502,7 +502,8 @@ print("predictors:", params['predictors'])
 date = pd.Timestamp('2022-10-04')
 nside = 2**10
 
-from diffusers import DDIMScheduler
+#from diffusers import DDIMScheduler
+from mydiffusers.scheduling_ddim import DDIMScheduler
 #model.set_w(1)
 ddim_scheduler = DDIMScheduler(
     num_train_timesteps=noise_scheduler.config.num_train_timesteps,
