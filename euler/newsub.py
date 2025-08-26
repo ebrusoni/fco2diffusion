@@ -1,5 +1,7 @@
 from utils import add_src_and_logger
-save_dir = f'../models/anoms_sea_1d/'
+models = ["UNet1D", "Guidance-UNet1D", "UNet2D", "UNet2DL"]
+dm = models[0]
+save_dir = f'../models/{dm}/'
 is_renkolab = True
 DATA_PATH, logging = add_src_and_logger(is_renkolab, save_dir)
 
@@ -17,7 +19,7 @@ from diffusers import DDPMScheduler, UNet1DModel
 
 from fco2models.utraining import prep_df, normalize_dss, load_checkpoint, train_diffusion, save_losses_and_png_diffusion
 from fco2models.utraining import get_segments_random, get_segments, make_monthly_split, get_stats_df, get_context_mask, replace_with_cruise_data, perturb_fco2
-from fco2models.models import MLP, UNet2DModelWrapper, ConvNet, UNet2DModelWrapper, ClassEmbedding, Unet2DClassifierFreeModel, UNet2DShipMix, TSEncoderWrapper, DiffusionEnsemble, UNet1DModelWrapper
+from fco2models.models import MLP, UNet2DModelWrapper, ConvNet, UNet2DModelWrapper, ClassEmbedding, Unet2DClassifierFreeModel, UNet2DShipMix, TSEncoderWrapper, DiffusionEnsemble, UNet1DModelWrapper, Unet1DClassifierFreeModel
 from fco2models.umeanest import train_mean_estimator
 
 # fix random seed for reproducibility
@@ -39,11 +41,11 @@ df['sst_anom'] = df['sst_cci'] - df['sst_clim']
 df['sss_anom'] = df['sss_cci'] - df['sss_clim']
 df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
 df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
-df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim']
+df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim'] # climatology is calculated on log mixed-layer depth
 print(df.fco2rec_uatm.max(), df.fco2rec_uatm.min())
 print(f"dataset shape: {df.shape}")
 
-mask_train, mask_val, mask_test = make_monthly_split(df)
+mask_train, mask_val, mask_test = make_monthly_split(df) # split expocodes by month as in gregor2024
 df_train = df[df.expocode.map(mask_train)]
 df_val = df[df.expocode.map(mask_val)]
 print(df_val.seamask.sum()/df_val.shape[0])
@@ -67,14 +69,14 @@ model_inputs = [target] + predictors + positional_encoding
 socat_data =  []#["sst_deg_c", "sal"]
 cols = model_inputs + socat_data
 
-train_stats = get_stats_df(df_train, model_inputs + socat_data, logger=logging)
-
+# divide the cruise tracks (indexed by expocodes) in segments of length 64
+train_stats = get_stats_df(df_train, model_inputs + socat_data, logger=logging) # gets means, stds, maxs and mins for every column, used for normalizing
 segment_df_train = df_train.groupby("expocode").apply(
     lambda x: get_segments_random(x, cols, n=4),
     include_groups=False,
 )
 train_socat_ds = np.concatenate(segment_df_train.values, axis=0)
-train_ds = train_socat_ds[:, :, :]
+train_ds = train_socat_ds[:, :, :] # here we remove the socat ship measurements when available
 #socat_ds = train_socat_ds[:, -2:, :]
 # convert to kelvin
 #socat_ds[:, 0, :] += 273.15
@@ -93,7 +95,7 @@ segment_df_test = df_test.groupby("expocode").apply(
 test_ds = np.concatenate(segment_df_test.values, axis=0)
 
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
-train_context_mask, val_context_mask, test_context_mask = get_context_mask([train_ds, val_ds, test_ds], logger=logging)
+train_context_mask, val_context_mask, test_context_mask = get_context_mask([train_ds, val_ds, test_ds], logger=logging) # mask to filter out invalid context containing Nans
 train_ds = train_ds[train_context_mask]
 #socat_ds = socat_ds[train_context_mask]
 val_ds = val_ds[val_context_mask]
@@ -101,9 +103,9 @@ test_ds = test_ds[test_context_mask]
 print(f"removing context nans")
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
 
-mode = 'mean_std'
+mode = 'mean_std' # z-normalization
 #train_ds = np.concatenate([train_ds, socat_ds], axis=1)
-train_ds, val_ds, test_ds = normalize_dss([train_ds, val_ds, test_ds], train_stats, mode, ignore=[], logger=logging)
+train_ds, val_ds, test_ds = normalize_dss([train_ds, val_ds, test_ds], train_stats, mode, ignore=[], logger=logging) # normalize
 
 # count nans in first column of the dataset
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
@@ -112,31 +114,60 @@ logging.info(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, t
 # print mins and maxs of the data
 for i in range(train_ds.shape[1]):
     print(f"train_ds {i} min: {np.nanmin(train_ds[:, i, :])}, max: {np.nanmax(train_ds[:, i, :])}")
-    #print(f"val_ds {i} min: {np.nanmin(val_ds[:, i, :])}, max: {np.nanmax(val_ds[:, i, :])}")
 
 print(f"train_ds shape: {train_ds.shape}")
 print(f"val_ds shape: {val_ds.shape}")
 
 # timestep_dim = 16
-layers_per_block = 2
-down_block_types = ("DownResnetBlock1D", "DownResnetBlock1D")
-up_block_types = ("UpResnetBlock1D", "UpResnetBlock1D")
-model_params = {
-     "sample_size": 64,
-     "in_channels": train_ds.shape[1] + 1, #timestep_dim + train_ds.shape[1] + 1,
-     "out_channels": 8,
-     "layers_per_block": layers_per_block,
-     "block_out_channels": (16, 32),
-     "down_block_types": down_block_types,
-     "up_block_types": up_block_types,
-     "norm_num_groups": None,
-     "use_timestep_embedding": True,
-     "act_fn": "relu"
-}
-logging.info("Using UNet1DModel")
+if dm == "UNet1D" or dm == "Guidance-UNet1D":
+    layers_per_block = 2
+    down_block_types = ("DownResnetBlock1D", "DownResnetBlock1D")
+    up_block_types = ("UpResnetBlock1D", "UpResnetBlock1D")
+    model_params = {
+         "sample_size": 64,
+         "in_channels": train_ds.shape[1] + 1, # add nanmask input channel
+         "out_channels": 8, # required otherwise code breaks
+         "layers_per_block": layers_per_block,
+         "block_out_channels": (16, 32),
+         "down_block_types": down_block_types,
+         "up_block_types": up_block_types,
+         "norm_num_groups": None,
+         "use_timestep_embedding": True,
+         "act_fn": "relu"
+    }
+    logging.info("Using UNet1DModel")
 
-model =  UNet1DModelWrapper(**model_params)
-num_epochs = 200
+    if dm == "UNet1D":
+        # epoch 200 is the best one usually
+        model =  UNet1DModelWrapper(**model_params)
+    else:
+        model_params = {
+            "unet_config": model_params,
+            "keep_channels": [18], # do not drop nan-mask channel
+            "num_channels": 19
+            }
+        model = Unet1DClassifierFreeModel(**model_params)
+
+if dm == "UNet2D" or dm == "UNet2DL":
+    # epochs 200 work well for both models
+    layers_per_block = 2
+    down_block_types = ('DownBlock2D', 'DownBlock2D')
+    up_block_types = ('UpBlock2D', 'UpBlock2D')
+    model_params = {
+       # "sample_size": (14, 64),
+       "in_channels": 1,
+       "out_channels": 1,
+       "layers_per_block": layers_per_block,
+       "block_out_channels": (16, 32) if dm == "UNet2DL" else (8, 16),
+       "down_block_types": down_block_types,
+       "up_block_types": up_block_types,
+       "norm_num_groups": 16 if dm == "UNet2DL" else 8,
+    #    "class_embed_type": "Identity",
+    #    "num_class_embeds": None, 
+    }
+    model = UNet2DModelWrapper(**model_params)
+
+num_epochs = 300
 timesteps = 1000
 
 #layers_per_block = 2
@@ -259,8 +290,6 @@ model, train_losses, val_losses = train_diffusion(model,
                                                   train_dataloader=train_dataloader,
                                                   val_dataloader=val_dataloader,
                                                   save_model_path=save_dir,
-                                                  #pos_encodings_start=len(predictors) + 1,
-                                                  #class_embedder=class_embedder,
                                                   )
 
     
