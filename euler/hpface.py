@@ -73,10 +73,12 @@ def get_patch_ds(params, patch_ix, patch_size, date, nside, dss=None):
 
     # get the patch coordinates
     xyf, lon, lat, patch_pix = get_nested_patch(patch_ix, patch_size, nside=nside)
-    #lon, lat = do_rot(lon, lat, (0, 0, 10))
-    ring_id = hp.nest2ring(nside, patch_pix)
+    #lon, lat = do_rot(lon, lat, (0, 0, 20)) # slightly rotate in case for better centering
+    #lon = lon % 360 # remap lon coordinates to 0-360 (ALWAYS DO THIS IF ROTATING)
+    
+    ring_id = hp.nest2ring(nside, patch_pix) # get indices in ring order
     if dss is None:
-        dss = get_day_dataset(date)
+        dss = get_day_dataset(date) # get data for specified date
     coords = pd.DataFrame({
         'lon': lon.flatten(),
         'lat': lat.flatten(),
@@ -87,10 +89,10 @@ def get_patch_ds(params, patch_ix, patch_size, date, nside, dss=None):
         'ring_pix':ring_id
     })
     coords['time_1d'] = date
-    # collocate the data
+    
+    # collocate the data to the coordinates in the patch/field
     context_df = collocate_coords(coords, dss, date)
-    #print(context_df.columns)
-    #print(context_df.shape)
+    
     context_df['lon'] = (context_df['lon'] + 180) % 360 - 180
     context_df = prep_df(context_df, with_target=False, with_log=False)[0]
     context_df['sst_clim'] += 273.15
@@ -99,17 +101,19 @@ def get_patch_ds(params, patch_ix, patch_size, date, nside, dss=None):
     context_df['chl_anom'] = context_df['chl_globcolour'] - context_df['chl_clim']
     context_df['ssh_anom'] = context_df['ssh_sla'] - context_df['ssh_clim']
     context_df['mld_anom'] = np.log10(context_df['mld_dens_soda'] + 1e-5) - context_df['mld_clim']
-    context_df = context_df[predictors + ['seamask', 'x', 'y']]
+    
+    context_df = context_df[predictors + ['seamask', 'x', 'y']] #extract only predictors plus seamask and indexing columns
     context_df = normalize(context_df, stats, params['mode'])
     context_df = context_df.fillna(context_df.mean())  # fill NaNs with mean of each column
 
+    # create numpy array dataset of shape (n_side_patch, n_side_patch, :) indexed by healpix x and y coordinates
     height = width = np.sqrt(patch_size).astype(int)
     context_ds = np.zeros((height, width, len(predictors) + 5), dtype=np.float32)
     x = context_df['x'].values.astype(int)
     y = context_df['y'].values.astype(int)
     for i, col in enumerate(predictors):
         context_ds[x, y, i] = context_df[col].values
-    # add lat lon
+    # add some useful indexes
     context_ds[x, y, -2] = lat
     context_ds[x, y, -1] = lon
     context_ds[x, y, -3] = patch_pix.flatten()
@@ -328,44 +332,61 @@ def infer_patch_gpu(
     device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
     dtype=torch.float32,        # use torch.float32 if reproducibility beats speed
 ):
-    """Torch-only version of the original NumPy routine (logic unchanged)."""
+    """Torch-only version of the original NumPy routine (logic unchanged). Made mostly with chatGPT"""
     
     # print(device)
     # ───────────────────────── context & padding ───────────────────────────
+    
+    # get remote sensing data for the selected patch and date
     context_ds_np = get_patch_ds(params, patch_ix, patch_size, date,
                                  nside=nside, dss=dss).astype(np.float32)
 
+    # extract coordinates and indices in different orders
     lat       = context_ds_np[:, :, -2]          # keep on CPU for return
     lon       = context_ds_np[:, :, -1]
     patch_pix = context_ds_np[:, :, -3]
     ring_pix  = context_ds_np[:, :, -4]
 
-    context_ds_np = context_ds_np[:, :, :-4]     # model input only
+    context_ds_np = context_ds_np[:, :, :-4]     # model input only (includes seamask)
 
-    core_side     = int(np.sqrt(patch_size))
+    core_side     = int(np.sqrt(patch_size)) # side of actual data
     segment_len   = 64
-    padded_side   = core_side + 2 * segment_len
+    padded_side   = core_side + 2 * segment_len # pad with one segment_len for each side
 
-    # build padded context (mirror padding on x–axis)
+    # build padded context (mirroring on x and y axis)
     padded_context = torch.zeros((padded_side, padded_side,
                                   context_ds_np.shape[2]),
                                  dtype=dtype, device=device)
 
+    # pad context tensor by mirroring data along the correct dimensions
     ctx = torch.as_tensor(context_ds_np, dtype=dtype, device=device)
     padded_context[segment_len:-segment_len, segment_len:-segment_len, :] = ctx
     padded_context[segment_len:-segment_len, :segment_len, :]             = \
         torch.flip(ctx[:, :segment_len, :], dims=[1])
     padded_context[segment_len:-segment_len, -segment_len:, :]            = \
         torch.flip(ctx[:, -segment_len:, :], dims=[1])
+    padded_context[-segment_len:, segment_len:-segment_len, :]             = \
+        torch.flip(ctx[-segment_len:, :, :], dims=[0])
+    padded_context[:segment_len,segment_len:-segment_len, :]            = \
+        torch.flip(ctx[:segment_len, :, :], dims=[0])
+    
+    # set seamask column to zero so that data is ignored
+    padded_context[segment_len:-segment_len, -segment_len:, -5] = 0 
+    padded_context[segment_len:-segment_len, segment_len:, -5] = 0
+    padded_context[-segment_len:, segment_len:-segment_len, -5] = 0 
+    padded_context[segment_len:, segment_len:-segment_len, -5] = 0
 
     # ────────────────────────── initial samples ────────────────────────────
+    # initilialize samples with noise
     sample_cols = torch.randn((padded_side, padded_side, n_samples),
                               dtype=dtype, device=device)
+    # if we are not on the first day overwrite noise with noised image from previous day
     if start_sample is not None:
         samp0 = torch.as_tensor(start_sample, dtype=dtype, device=device)
         sample_cols[segment_len:-segment_len,
                     segment_len:-segment_len, :] = samp0
-
+    
+    # concatenate samples with conditioning
     sample_context = torch.cat((sample_cols, padded_context), dim=2)
 
     pred_cols  = torch.arange(n_samples, sample_context.shape[2],
@@ -378,11 +399,11 @@ def infer_patch_gpu(
                  torch.as_tensor(ring_pix.flatten(), device=device))
     inverse = torch.argsort(order)
     
+    # initialize scheduler for refining the last few steps
     last_scheduler = DDIMScheduler(
         num_train_timesteps=ddim_scheduler.config.num_train_timesteps,
         beta_schedule=ddim_scheduler.config.beta_schedule,
         clip_sample_range=ddim_scheduler.config.clip_sample_range,
-        #timestep_spacing="trailing"
     )
     
     # timesteps
@@ -390,13 +411,14 @@ def infer_patch_gpu(
         steps = ddim_scheduler.timesteps[::jump]
     else:
         steps = t_loop
-    #steps = list(steps)                       # ensure we can iterate twice
 
-    noise_lvl = 40
-    step=-2
-    noise_scheduler = ddim_scheduler
-    last_step = len(steps) - 1
+    noise_lvl = 40 # noise level where refinement will begin 
+    step=-2 # small step size to smooth out boundaries nicely
+    noise_scheduler = ddim_scheduler # start with regular scheduler
+    last_step = len(steps) - 1 # number of denoising steps before refinement
+    
     steps = torch.cat([steps, torch.arange(noise_lvl, -1, step).to(device)])
+    #timesteps for refinenment from noise_lvl to 0
     last_scheduler.set_timesteps(noise_lvl // step, steps=torch.arange(noise_lvl, -1, step), device=device)
 
     model.to(device).eval()
@@ -414,16 +436,20 @@ def infer_patch_gpu(
 
             pred_part = core[:, :, pred_cols]                    # (P,P,p)
             samp_part = core[:, :, :n_samples]                   # (P,P,n)
-
+            
+            # concatenate the n samples with the same conditioning
+            # n: number of samples, P: side of padded patch
             data = torch.cat((samp_part.permute(2, 0, 1)  # (n,P,P)
                                           .unsqueeze(-1),  # (n,P,P,1)
                               pred_part.unsqueeze(0)
                                        .expand(n_samples, -1, -1, -1)),
                              dim=3)                              # (n,P,P,c)
-
+            
+            # reorder for ring segmentation
             ring_ds = data.reshape(n_samples, patch_size,
                                    cols_per_s)[:, order, :]
-
+            
+            # reshape to make it suitble as input to UNet
             segments = (ring_ds
                         .reshape(n_samples, n_seg, segment_len, cols_per_s)
                         .permute(0, 1, 3, 2)
@@ -432,10 +458,13 @@ def infer_patch_gpu(
 
         else:
             # ----- build vertical / horizontal segments -------------------
+            
+            # draw different offsets for each sample
             offsets = segment_len + torch.randint(-64, 64,
                                                   (n_samples,),
                                                   device=device)
-
+            
+            # concatenate samples with conditioning
             samp_pad = sample_context[:, :, :n_samples]           # (P,P,n)
             samp_pad = samp_pad.permute(2, 0, 1)                  # (n,P,P)
 
@@ -444,10 +473,12 @@ def infer_patch_gpu(
 
             data = torch.cat((samp_pad.unsqueeze(-1), pred_pad),  # (n,P,P,c)
                              dim=3)
-
+            
+            # transpose for vertical segmentation
             if vert_pass:                 # rotate by swapping x and y
                 data = data.transpose(1, 2)
-
+                
+            # make row and column indices of image, will be expanded on the whole image grid
             P          = padded_side
             side_core  = P - 2 * segment_len
             rows_band  = torch.arange(segment_len,
@@ -460,13 +491,16 @@ def infer_patch_gpu(
             rows_i = rows_band[None, :, None].expand(n_samples,
                                                      side_core,
                                                      side_core)
+            
+            # add offsets
             cols_i = (offsets[:, None, None] +
                       cols_band[None, None, :]).expand(n_samples,
                                                         side_core,
                                                         side_core)
 
             sliced = data[samp_i, rows_i, cols_i, :]              # (n,s,s,c)
-
+            
+            # reshape size to fit UNet
             segments = (sliced
                         .reshape(n_samples,
                                  side_core * side_core // segment_len,
@@ -489,37 +523,45 @@ def infer_patch_gpu(
                             .reshape(n_samples, patch_size)
 
         side_core = padded_side - 2 * segment_len
+        # row indices in core image
         rows_core = torch.arange(segment_len,
                                  segment_len + side_core,
                                  device=device)
+        # column indices in core image
         cols_core = rows_core
-
+        
+        # expand sample id to correct size
         samp_idx = torch.arange(n_samples, device=device)[:, None, None] \
                               .expand(n_samples, side_core, side_core)
 
         if ring_pass:
+            # invert from ring to nested order
             imgs = preds[:, inverse].view(n_samples, side_core, side_core)
+            # update samples
             sample_context[segment_len:-segment_len,
                            segment_len:-segment_len,
                            :n_samples] = imgs.permute(1, 2, 0)
 
         elif not vert_pass:         # horizontal
             imgs = preds.view(n_samples, side_core, side_core)
-
+            
+            # expand row indices to correct size
             rows_idx = rows_core[None, :, None].expand(n_samples,
                                                        side_core,
                                                        side_core)
+            # add again offsets to get correct column indices
             cols_idx = (offsets[:, None, None] +
                         torch.arange(side_core, device=device)
                              [None, None, :]).expand(n_samples,
                                                      side_core,
                                                      side_core)
-
+            
             sample_context[rows_idx, cols_idx, samp_idx] = imgs
 
         else:                       # vertical
             imgs = preds.view(n_samples, side_core, side_core).transpose(1, 2)
-
+            
+            # in horizontal case add offsets to row index
             rows_idx = (offsets[:, None, None] +
                         torch.arange(side_core, device=device)
                              [None, :, None]).expand(n_samples,
@@ -530,14 +572,17 @@ def infer_patch_gpu(
                                                        side_core)
 
             sample_context[rows_idx, cols_idx, samp_idx] = imgs
-
+            
+        # when we reach the last step of the first inference round, add noise to the image and switch schedulers
         if step_no == last_step:
             sample_context[:, :, :n_samples] = noise_scheduler.add_noise(sample_context[:, :, :n_samples], torch.randn_like(sample_context[:, :, :n_samples]).to(device), torch.tensor(noise_lvl).to(device))
             noise_scheduler = last_scheduler
 
     # ───────────────────────────── return ─────────────────────────────────
+    # remove padding
     result = sample_context[segment_len:-segment_len,
                             segment_len:-segment_len, :].cpu().numpy()
+    # add some info for easier plotting
     extra  = np.stack((lat, lon, patch_pix, ring_pix), axis=2)    # (P,P,4)
     return np.concatenate((result, extra), axis=2, dtype=np.float32)
 
@@ -555,40 +600,38 @@ print("predictors:", params['predictors'])
 date = pd.Timestamp('2022-10-04')
 
 from diffusers import DDIMScheduler
-#model.set_w(1)
+#model.set_w(1) # set_w for guided models
 ddim_scheduler = DDIMScheduler(
     num_train_timesteps=noise_scheduler.config.num_train_timesteps,
     beta_schedule=noise_scheduler.config.beta_schedule,
     clip_sample_range=noise_scheduler.config.clip_sample_range,
     )
-#timesteps = np.concatenate((np.arange(0, 40, 2), np.arange(40, 1000, 20)))[::-1]
-#/opt/conda/lib/python3.10/site-packages/diffusers/schedulers/scheduling_ddim.py, line 335 for passing inference steps as list
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 n_steps = 50
 ddim_scheduler.set_timesteps(n_steps, device=device)
-n=5
+n=1
 nside = 2**10
 npix = hp.nside2npix(nside)
 face_pixs = npix//12
-num_subfaces = 4 # number of subfaces should a power of 4
+num_subfaces = 4 # number of subfaces must be a power of 4
 patch_size = face_pixs // num_subfaces
 print(f"Patch size: {patch_size}")
 
-patch_ix = 31
+patch_ix = 31 # select index of the patch to be denoised, there are 12*num_subfaces
 samples = []
 start_date ='2022-01-01' 
 date_range = pd.date_range(start=start_date, end='2022-03-01', freq='D')
 dfs = []
 dfs_cond = []
 date_range_loop = tqdm(date_range, desc="Processing dates")
-start_sample = None
-timesteps = ddim_scheduler.timesteps
+start_sample = None # initilialze offset sample for later dates.
+timesteps = ddim_scheduler.timesteps #initialize timesteps
 
 
 
 for date in date_range_loop:
-    t_loop = None if date == pd.Timestamp(start_date) else timesteps[n_steps // 2:]
+    t_loop = None if date == pd.Timestamp(start_date) else timesteps[n_steps // 2:] # halve the number of steps after the first day
     sample = infer_patch_gpu(model, ddim_scheduler, params, patch_ix, patch_size, date, nside=nside, 
                         dss=None, jump=None, n_samples=n, t_loop=t_loop, start_sample=start_sample)
     
@@ -605,7 +648,7 @@ for date in date_range_loop:
     ], names=['patch_pix', 'lat', 'lon'])
     
     # Prepare sample columns
-    sample_cols = [f"sample_{i}" for i in range(n)] #+ params['predictors']
+    sample_cols = [f"sample_{i}" for i in range(n)] 
     sample_data = sample[:, :, :n].reshape(-1, n).copy()
     
     # De-normalize xco2, rescale and apply xco2 correction
