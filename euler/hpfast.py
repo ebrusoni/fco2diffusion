@@ -1,5 +1,4 @@
 from utils import add_src_and_logger
-#save_dir = f'../models/mean_std/'
 is_renkulab = True
 DATA_PATH, logging = add_src_and_logger(is_renkulab, None)
 
@@ -12,8 +11,6 @@ print("GPU seen       :", torch.cuda.get_device_name(0) if torch.cuda.is_availab
 
 from fco2dataset.ucollocate import get_day_data, collocate, get_zarr_data
 def get_day_dataset(date):
-    # get global satellite data for a given date
-    # dss = get_day_data(date, save_path='../data/inference/gridded')
     dss = get_zarr_data(str(date.year))
     return dss
 
@@ -44,13 +41,10 @@ def segment_ds(data, orientation, segment_len=64):
     _, side, num_cols = data.shape
 
     if orientation == 'vertical':
-        data = np.transpose(data, (1, 0, 2))
+        data = np.transpose(data, (1, 0, 2)) # transpose for vertical segmentation
     elif not (orientation == 'horizontal'):
         raise ValueError(f"Unknown orientation {orientation}")
-    #segments = np.zeros(((side**2) // segment_len, num_cols, segment_len), dtype=np.float32)
-    #for i in range(num_cols):
-        #segments[:, i, :] = data[:, :, i].reshape((side ** 2) // segment_len, segment_len)
-    data = data.reshape((side ** 2) // segment_len, segment_len, -1)
+    data = data.reshape((side ** 2) // segment_len, segment_len, -1) # divide dataset into segments (n_side is a power of 2, so it is always divisible by segment_len)
     return np.swapaxes(data, 1, 2)
 
 
@@ -80,18 +74,20 @@ def do_step_loader(model, noise_scheduler, dataloader, t, device, jump, eta):
                 sample = noise_scheduler.add_noise(x_0, torch.randn_like(sample_prev), t - jump)
             else:
                 sample = x_0
-            sample[torch.isnan(sample)] = sample_prev[torch.isnan(sample)]
+            sample[torch.isnan(sample)] = sample_prev[torch.isnan(sample)] # fill possible Nans with values from previous iteration to avoid propagation
             samples.append(sample)
-            #samples.append(sample.cpu().numpy())
     return torch.cat(samples, axis=0)
 
 def do_random_rot(lon, lat, nest=True):
         random_zrotation = np.random.random() * 360
         #random_yrotation = np.random.random() * 5
         #random_xrotation = np.random.random() * 5
-        rot = hp.Rotator(rot=(random_zrotation, 0, 0), eulertype="ZYX") # rotate only around the z-axis, so we do not mix equatirial and polar coordinates
+        # rotate only around the z-axis, so we do not mix equatirial and polar coordinates
+        rot = hp.Rotator(rot=(random_zrotation, 0, 0), eulertype="ZYX")
+        # rotate canonical coordinates (coordinates of unrotated pixels)
         lon_rot, lat_rot = rot(lon, lat, lonlat=True)
-        m_rot = hp.ang2pix(nside, lon_rot, lat_rot, nest=nest, lonlat=True)
+        # calculate canonical pixel indices corresponding to rotated coordinates (if we rotate around z-axis mapping is onr-to-one)
+        m_rot = hp.ang2pix(nside, lon_rot, lat_rot, nest=nest, lonlat=True) 
         return m_rot
 
 
@@ -268,22 +264,23 @@ def infer_patch_with_rotations_gpu(
     device: torch.device | None = None,
     dtype: torch.dtype = torch.float32,   # change to float32 for reproducibility
 ):
-    """GPU-resident rewrite of the original function (logic unchanged)."""
+    """GPU-resident rewrite of the original function (logic unchanged). Written mostly with chatGPT"""
 
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device).eval()
 
     # ────────────────────────── 0. metadata & DataFrame build ─────────────────────────
-    npix = hp.nside2npix(nside)
-    m    = np.arange(npix)
-    lon, lat = hp.pix2ang(nside, m, nest=True, lonlat=True)
+    npix = hp.nside2npix(nside) #total number of pixels: 12*n_side**2
+    m    = np.arange(npix) # pixel ids
+    lon, lat = hp.pix2ang(nside, m, nest=True, lonlat=True) # calculate canonical coordinates
 
     start = time.time()
-    dss   = get_day_dataset(date)
+    dss   = get_day_dataset(date) # get dataset for specified date
     print(f"download time: {time.time() - start:.1f}s")
 
     start = time.time()
+    # collocate remote sensing data to coordinates of each pixel
     context_df = collocate_coords(
         pd.DataFrame({"lon": lon.flatten(), "lat": lat.flatten(), "time_1d": date}),
         dss,
@@ -292,46 +289,47 @@ def infer_patch_with_rotations_gpu(
     print(f"collocation time: {time.time() - start:.1f}s")
     print(f"Collocated data shape: {context_df.shape}")
 
-    # preprocessing (CPU; negligible compared with diffusion loop)
-    context_df["lon"] = (context_df["lon"] + 180) % 360 - 180
+    context_df["lon"] = (context_df["lon"] + 180) % 360 - 180 # normalize lon to [-180, 180]
+    # do the same preprocessing as in training (add positional/temporal encodings, sea mask, climatologies)
     df = prep_df(context_df, with_target=False, with_log=True)[0]
     df["sst_clim"] += 273.15
     df["sst_anom"]  = df["sst_cci"] - df["sst_clim"]
     df["sss_anom"]  = df["sss_cci"] - df["sss_clim"]
     df["chl_anom"]  = df["chl_globcolour"] - df["chl_clim"]
     df["ssh_anom"]  = df["ssh_sla"] - df["ssh_clim"]
-    df["mld_anom"]  = np.log10(df["mld_dens_soda"] + 1e-5) - df["mld_clim"]
+    df["mld_anom"]  = np.log10(df["mld_dens_soda"] + 1e-5) - df["mld_clim"] # mld_clim is in log scale
 
-    context_df = df.loc[:, params["predictors"]+["seamask"]]
+    # conditioning provided by predictors from training plus marginal sea mask
+    context_df = df.loc[:, params["predictors"]+["seamask"]] 
     stats      = {
         "means": params["train_means"],
         "stds":  params["train_stds"],
         "mins":  params["train_mins"],
         "maxs":  params["train_maxs"],
     }
-    context_df = normalize(context_df, stats, params["mode"])
-    context_df = context_df.fillna(context_df.mean())
-
+    context_df = normalize(context_df, stats, params["mode"]) # normalize with training statistics
+    context_df = context_df.fillna(context_df.mean()) # impute all nans to avoid invalid predictions
     print(f"Preprocessed data shape: {context_df.shape}")
 
     # add metadata columns (still CPU)
     context_df["healpix_id"] = m
-    ring = hp.nest2ring(nside, m)
-    context_df["m_rotated"] = m           # placeholder
+    ring = hp.nest2ring(nside, m)  # map pixel ids to ring order for segmentation in ring order
+    context_df["m_rotated"] = m # placeholder for now
     context_df.set_index("healpix_id", inplace=True)
 
     # ────────────────────────── 1. tensors to GPU ─────────────────────────────────────
+    
+    # tensort containing predictor columns
     pred_t = torch.as_tensor(
         context_df[params["predictors"]+["seamask"]].values, dtype=dtype, device=device
     )                                                          # (npix, n_pred)
 
     # sample columns initialised with N(0,1)
     samples_t = torch.randn((npix, n_samples), dtype=dtype, device=device)
-    #samples_seg = torch.randn(64, n_samples, dtype=dtype, device=device)
-    #samples_t = samples_seg.repeat((npix // 64, 1))
     # column set [samples | predictors]
     cds_all_t = torch.cat((samples_t, pred_t), dim=1)          # (npix, n_s+n_pred)
 
+    # coordinates and ring index as tensors
     lon_t   = torch.as_tensor(lon,  dtype=dtype, device=device)
     lat_t   = torch.as_tensor(lat,  dtype=dtype, device=device)
     ring_t  = torch.as_tensor(ring, device=device, dtype=torch.long)
@@ -339,18 +337,21 @@ def infer_patch_with_rotations_gpu(
     # Healpix helpers (static)
     fnpix   = npix // 12
     faces_t = torch.arange(12, device=device, dtype=torch.long)
-    x_np, y_np = hp.pix2xyf(nside, np.arange(fnpix), nest=True)[:2]
+    # x,y coordinates for each pixel for every face (they are the same for all faces)
+    x_np, y_np = hp.pix2xyf(nside, np.arange(fnpix), nest=True)[:2] 
     x_t = torch.as_tensor(x_np, device=device, dtype=torch.long)
     y_t = torch.as_tensor(y_np, device=device, dtype=torch.long)
 
     # ────────────────────────── 2. per-sample diffusion ──────────────────────────────
+    
+    # initialize scheduler for refining the last few steps
     last_scheduler = DDIMScheduler(
         num_train_timesteps=ddim_scheduler.config.num_train_timesteps,
         beta_schedule=ddim_scheduler.config.beta_schedule,
         clip_sample_range=ddim_scheduler.config.clip_sample_range,
-        #timestep_spacing="trailing"
         )
     for i in range(n_samples):
+        # select columns from cds_all_t relevant for sample i
         cols_this  = [f"sample_{i}"] + params["predictors"] + ["seamask"]
         colixs     = torch.tensor(
             [i] + list(range(n_samples, n_samples + len(params["predictors"]) + 1)),
@@ -360,11 +361,11 @@ def infer_patch_with_rotations_gpu(
 
         cds_t = cds_all_t[:, colixs]                           # (npix, 1+n_pred)
         
-        noise_lvl = 1
-        step=-2
-        noise_scheduler = ddim_scheduler
+        noise_lvl = 40 # noise level where refinement will begin 
+        step=-2 # small step size to smooth out boundaries nicely
+        noise_scheduler = ddim_scheduler # start with regular scheduler
         t_loop = torch.cat([noise_scheduler.timesteps[::jump], torch.arange(noise_lvl, -1, step).to(device)])
-        last_step = len(noise_scheduler.timesteps[::jump]) - 1
+        last_step = len(noise_scheduler.timesteps[::jump]) - 1 # number of denoising steps before refinement
         last_scheduler.set_timesteps(noise_lvl // step, steps=torch.arange(noise_lvl, -1, step), device=device)
         for step_no, t in enumerate(
             tqdm(t_loop, desc=f"sample {i}")
@@ -374,61 +375,77 @@ def infer_patch_with_rotations_gpu(
 
             if ring_mode:
                 # ───── ring segmentation ──────────────────────────────────────────
-                order_t  = torch.argsort(ring_t)
+                order_t  = torch.argsort(ring_t) # map from nested to ring order
+                # rotate pixels in ring order
                 ring_rot = torch.as_tensor(
                     do_random_rot(lon[order_t.cpu()], lat[order_t.cpu()], nest=False),
                     device=device,
                     dtype=torch.long,
                 )
-
+                
+                # map to ring order and rotate
                 df_t = cds_t[order_t][ring_rot]                       # (npix, cols)
+                # segment reordered and rotated dataset 
                 segments_t = (df_t.view(npix // 64, 64, len(cols_this))
                                    .permute(0, 2, 1)
                                    .contiguous())
-
+                
                 ds = torch.cat(
                         (segments_t, ),#torch.ones_like(segments_t[:, :1, :])),
                         dim=1,
                      )
+                
+                # denoise one timestep
                 loader = torch.utils.data.DataLoader(
                     ds, batch_size=8096, shuffle=False, num_workers=0
                 )
 
                 preds = do_step_loader(model, noise_scheduler, loader, t, device, jump, eta=0.0)
                 preds = preds.reshape(npix)
-
+                
+                # assign back in correct order
                 tmp = torch.empty(npix, dtype=dtype, device=device)
                 tmp[ring_rot] = preds.to(dtype)
                 cds_t[:, 0]   = tmp[torch.argsort(order_t)]
 
             else:
                 # ───── face segmentation ─────────────────────────────────────────
+                
+                # rotate all pixels
                 m_rot = torch.as_tensor(
                     do_random_rot(lon, lat), device=device, dtype=torch.long
                 )
-
+                
+                # get pixel ids for all faces in canonical order
                 fpix_faces     = (faces_t[:, None] * fnpix +
                                   torch.arange(fnpix, device=device))          # (12,f)
+                # rotate the pixels
                 fpix_rot_faces = m_rot[fpix_faces]                             # (12,f)
-
+                
+                # get the data associated with the roated positions
                 df_all_t = cds_t[fpix_rot_faces]                               # (12,f,cols)
-
+                
+                # create new tensor with face dimension (12) to index by faces more easily
                 fds_all_t = torch.full(
                     (12, nside, nside, len(cols_this)),
                     float("nan"),
                     dtype=dtype,
                     device=device,
                 )
+                
+                # assign it data
                 fds_all_t[
                     faces_t.repeat_interleave(fnpix),
                     x_t.repeat(12),
                     y_t.repeat(12),
                 ] = df_all_t.reshape(-1, len(cols_this))
-
+                
+                # swap axes if segmentation is vertical
                 if vert_mode:
                     fds_all_t = fds_all_t.swapaxes(1, 2)      # swap x ↔ y
 
                 n_segments = (12 * nside * nside) // 64
+                # reshape faces (which are always powers of 2, so divisble by 64) and permute dimensions to match UNet input shape
                 segments_t = (fds_all_t.reshape(-1, len(cols_this))
                                       .view(n_segments, 64, len(cols_this))
                                       .permute(0, 2, 1)
@@ -444,17 +461,21 @@ def infer_patch_with_rotations_gpu(
 
                 preds = do_step_loader(model, noise_scheduler, loader, t, device, jump,eta=0.0)
                 preds = preds.reshape(12, nside, nside)          # (face, y, x)
-
+                
+                # invert dimensions if needed
                 y_idx = x_t if vert_mode else y_t
                 x_idx = y_t if vert_mode else x_t
-
+                
+                # assign in original shape (without face dimension)
                 out_vals = preds[
                     faces_t.repeat_interleave(fnpix),
-                    #y_idx.repeat(12),
                     x_idx.repeat(12),
                     y_idx.repeat(12),
                 ]
+                # assign in rotated order
                 cds_t[fpix_rot_faces.reshape(-1), 0] = out_vals
+                
+                # if we reach the last step of the first inference round, add noise to the image and switch schedulers
                 if step_no == last_step:
                     cds_t[:, 0] = noise_scheduler.add_noise(cds_t[:, 0], torch.randn_like(cds_t[:, 0]).to(device), torch.tensor(noise_lvl).to(device))
                     noise_scheduler = last_scheduler
@@ -499,9 +520,10 @@ ddim_scheduler = DDIMScheduler(
 ## prev_timestep = timestep - self.config.num_train_timesteps // self.num_inference_steps
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ddim_scheduler.set_timesteps(50, device=device, steps=None)
-n=1
+n=20
 df = infer_patch_with_rotations_gpu(model, ddim_scheduler, params, date, nside=nside, jump=None, n_samples=n, device=device)
 sample_cols = [f"sample_{i}" for i in range(n)]
+# renormalize and add xco2 offset 
 df['xco2'] = df['xco2'] * params['train_stds'][11] + params['train_means'][11]
 df[sample_cols] = df[sample_cols] * params['train_stds'][0] + params['train_means'][0] + df['xco2'].values[:, np.newaxis]
 df.to_parquet(f'{save_path}global.pq')
