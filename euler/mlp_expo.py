@@ -74,11 +74,12 @@ def get_samples_ensemble(df, model_info):
 
 from fco2models.ueval import rescale
 samples = get_samples_ensemble(df_test.copy(), models['sota_ensemble'])
+
 params = models['sota_ensemble']['params']
 ensemble_size = models['sota_ensemble']['model'].E
 samples = rescale(samples.reshape(-1, 1), params, params['mode']).reshape(ensemble_size, -1).T
 samples += df_test['xco2'].values[:, None]
-df_test['fco2rec_uatm'] += df_test['xco2'] # remove xco2 offset
+df_test.loc[:, 'fco2rec_uatm'] += df_test.loc[:, 'xco2'] # remove xco2 offset
 
 mlp_pred_cols = [f'mlp_{i}' for i in range(samples.shape[1])]
 df_test.loc[:, mlp_pred_cols] = samples
@@ -141,11 +142,24 @@ def get_df_err_stats(df, sample_cols):
         'crps': crps_mean
     })
 
-test_preds = pd.read_parquet("../models/anoms_sea_1d/eta_0_test_samples.pq")
+dm_preds = pd.read_parquet("../models/anoms_sea_1d/eta_0_test_samples.pq")
+# load mask selecting predictions made also by the diffusion model to ensure fairness
 pred_mask = pd.read_parquet("../models/anoms_sea_1d/pred_nans.pq")
 
-mlp_sample_cols = [f"mlp_{i}" for i in range(50)]
-err = get_df_err_stats(df_test.iloc[pred_mask.values], mlp_sample_cols)
+# match variances
+dm_samples = [f"sample_{i}" for i in range(50)]
+dm_std = dm_preds.loc[pred_mask.values, dm_samples].std(axis=1).mean()
+mlp_std = df_test.loc[pred_mask.values, mlp_pred_cols].std(axis=1).mean()
+print(f"diffusion model mean std: {dm_std}")
+print(f"MLP model mean std: {mlp_std}")
+scale_const = dm_std/mlp_std # scaling constant to match stds
+
+mlp_mean = (scale_const - 1) * df_test.loc[pred_mask.values, mlp_pred_cols].mean(axis=1) # needed so that samples have the same mean estimates as before
+mlp_pred_cols_scaled = ["scaled_"+col for col in mlp_pred_cols] 
+df_test[mlp_pred_cols_scaled] = (scale_const * df_test.loc[pred_mask.values, mlp_pred_cols]) - mlp_mean.values[:, None]
+
+
+err = get_df_err_stats(df_test.loc[pred_mask.values], mlp_pred_cols_scaled) # get error_statistics
 for k in err: 
     print(f"{k}: {err[k]}")
 
