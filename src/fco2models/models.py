@@ -317,7 +317,7 @@ class Unet2DClassifierFreeModel(UNet2DModel):
         self.w = new_w
 
 class Unet1DClassifierFreeModel(UNet1DModel):
-    def __init__(self, unet_config, keep_channels, num_channels, w=2.0):
+    def __init__(self, unet_config, keep_channels, num_channels, w=1.0):
         """
         UNet2D model with class embedding.
         
@@ -328,9 +328,11 @@ class Unet1DClassifierFreeModel(UNet1DModel):
         super(Unet1DClassifierFreeModel, self).__init__(**unet_config)
         #self.w = w
         #self.fixed_h = 16  # must be power of 2
+        self.num_channels = num_channels
         self.channel_mask = torch.full((self.num_channels,), True, dtype=torch.bool)
         self.channel_mask[keep_channels] = False
         self.channel_mask[0] = False  # always keep the first channel (fCO2)
+        self.w=w
     
     def forward(self, x, time, **kwargs):
         
@@ -338,13 +340,13 @@ class Unet1DClassifierFreeModel(UNet1DModel):
             uncond = torch.rand(x.shape[0], device=x.device) < 0.5
             x_uncond = x.clone()
             x_uncond[uncond.nonzero(as_tuple=True)[0].unsqueeze(1), self.channel_mask.nonzero(as_tuple=True)[0], :] = 0
-            pred = super().forward(x_uncond.unsqueeze(1), time, **kwargs)[0]
+            pred = super().forward(x_uncond, time, **kwargs)[0]
             return (pred[:, 0:1, :],)
             
         x_uncond = x.clone()
         x_uncond[:, self.channel_mask, :] = 0.0 # keep target, temperature, salinity, and mask, but set all other channels to 0
-        pred = super().forward(x.unsqueeze(1), time, **kwargs)[0] if self.w != 0 else 0
-        uncond_pred =  super().forward(x_uncond.unsqueeze(1), time, **kwargs)[0] if self.w != 1 else 0
+        pred = super().forward(x, time, **kwargs)[0] if self.w != 0 else 0
+        uncond_pred =  super().forward(x_uncond, time, **kwargs)[0] if self.w != 1 else 0
         # classifier free prediction
         pred = uncond_pred + self.w * (pred - uncond_pred)
         return (pred[:, 0:1, :],)
