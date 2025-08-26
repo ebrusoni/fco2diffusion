@@ -3,7 +3,8 @@ import torch.nn as nn
 from torch import vmap
 import copy
 from torch.func import stack_module_state, functional_call
-from diffusers import UNet1DModel, UNet2DModel
+from diffusers import UNet2DModel
+from mydiffusers.unet_1d import UNet1DModel 
 import importlib
 
 class MLPNaiveEnsemble(nn.Module):
@@ -315,7 +316,7 @@ class Unet2DClassifierFreeModel(UNet2DModel):
     
     def set_w(self, new_w):
         self.w = new_w
-
+        
 class Unet1DClassifierFreeModel(UNet1DModel):
     def __init__(self, unet_config, keep_channels, num_channels, w=1.0):
         """
