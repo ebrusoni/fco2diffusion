@@ -3,10 +3,15 @@ Create the conda environment for this repo by running
 ```
 conda env create -f euler/environment.yml
 ```
+this will create the environment ```fco2diffusion```. Activate the environment the usual way with
+```
+conda activate fco2diffusion
+```
 
 
 # Repo Overview
-
+Short descsription of the relevant python scripts and jupyter notebooks
+ 
 ## Training, Evaluation and Inference
 All python scripts for running and evaluating both the diffusion models and MLP ensembles are in the euler directory:
 
