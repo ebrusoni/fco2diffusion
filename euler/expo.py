@@ -1,12 +1,12 @@
 import torch
 import numpy as np
 import pandas as pd
-# from diffusers import DDIMScheduler
-from mydiffusers.scheduling_ddim import DDIMScheduler
 from utils import add_src_and_logger
 save_dir = None
 is_renkulab = True
 DATA_PATH, logging = add_src_and_logger(is_renkulab, None)
+# from diffusers import DDIMScheduler
+from mydiffusers.scheduling_ddim import DDIMScheduler
 
 def normalize(df, stats, mode):
     for i in range(len(stats['means']) - 1): # first column is the target
