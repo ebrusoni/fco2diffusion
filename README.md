@@ -1,9 +1,9 @@
 # Getting started
+Create the conda environment for this repo by running
+```
+conda env create -f euler/environment.yml
+```
 
-Install pip packages with requirements.txt file in euler folder
-```
-pip install -r euler/requirements.txt
-```
 
 # Repo Overview
 
