@@ -11,7 +11,7 @@ conda activate fco2diffusion
 
 # Repo Overview
 Short descsription of the relevant python scripts and jupyter notebooks
- 
+
 ## Training, Evaluation and Inference
 All python scripts for running and evaluating both the diffusion models and MLP ensembles are in the euler directory:
 
@@ -25,7 +25,7 @@ All python scripts for running and evaluating both the diffusion models and MLP 
 - [hpmlp.py](https://github.com/ebrusoni/fco2diffusion/blob/main/euler/hpmlp.py) generates samples for the whole ocean using a trained MLP ensemble
 - [mlp_expo.py](https://github.com/ebrusoni/fco2diffusion/blob/main/euler/mlp_expo.py) generates cruise tracks with the MLP ensemble
 
-- [utils.py](https://github.com/ebrusoni/fco2diffusion/blob/main/euler/utils.py) contains a single function to add a logger and add a path to the src folder
+- [utils.py](https://github.com/ebrusoni/fco2diffusion/blob/main/euler/utils.py) contains a single function to add a logger and add a path to the src folder. The path to the location of the dataset directory can also be specified here.
 
 ## SOCAT Preprocessing and data collocation
 The preprocessing functions are in the src/fco2dataset folder:
