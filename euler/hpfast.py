@@ -60,6 +60,7 @@ def fdf_to_numpy(df, cols, nside):
     return fds, x, y
 
 def do_step_loader(model, noise_scheduler, dataloader, t, device, jump, eta):
+    """Performs a denoising step given timestep, data and model"""
     samples = []
     for (ix, batch) in enumerate(dataloader):
         with torch.no_grad():
@@ -79,6 +80,8 @@ def do_step_loader(model, noise_scheduler, dataloader, t, device, jump, eta):
     return torch.cat(samples, axis=0)
 
 def do_random_rot(lon, lat, nest=True):
+        """Use healpy funcionality to perform a random rotation along the z_axis.
+        Returns the healpix id map"""
         random_zrotation = np.random.random() * 360
         #random_yrotation = np.random.random() * 5
         #random_xrotation = np.random.random() * 5
@@ -264,7 +267,36 @@ def infer_patch_with_rotations_gpu(
     device: torch.device | None = None,
     dtype: torch.dtype = torch.float32,   # change to float32 for reproducibility
 ):
-    """GPU-resident rewrite of the original function (logic unchanged). Written mostly with chatGPT"""
+    """
+    Performs inference over the full HEALPix grid using a diffusion model with random rotations.
+    This function preprocesses remote sensing data, applies normalization and feature engineering, 
+    and then runs a diffusion-based generative model over the data in segments, using random rotations and different HEALPix indexing schemes.
+    Written mostly with chatgpt
+    Parameters
+    ----------
+    model : torch.nn.Module
+        The trained diffusion model to use for inference.
+    ddim_scheduler : DDIMScheduler
+        Scheduler object controlling the diffusion process.
+    params : dict
+        Dictionary containing model and data parameters, including predictors and normalization stats.
+    date : str or datetime
+        Date for which to perform inference (used to select and collocate data).
+    nside : int, optional
+        HEALPix nside parameter (resolution of the sphere), by default 1024.
+    jump : int or None, optional
+        Step size for diffusion timesteps; if None, uses default scheduler steps.
+    n_samples : int, optional
+        Number of samples to generate per pixel, by default 1.
+    device : torch.device or None, optional
+        Device to run inference on; if None, uses CUDA if available, else CPU.
+    dtype : torch.dtype, optional
+        Data type for tensors, by default torch.float32.
+    Returns
+    -------
+    context_df : pandas.DataFrame
+        DataFrame containing the collocated and preprocessed data, with added sample columns for each generated sample.
+    """
 
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
