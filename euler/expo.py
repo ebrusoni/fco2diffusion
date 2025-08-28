@@ -7,6 +7,7 @@ is_renkulab = True
 DATA_PATH, logging = add_src_and_logger(is_renkulab, None)
 # from diffusers import DDIMScheduler
 from mydiffusers.scheduling_ddim import DDIMScheduler
+np.random.seed(0)
 
 def normalize(df, stats, mode):
     for i in range(len(stats['means']) - 1): # first column is the target
@@ -64,6 +65,11 @@ from fco2models.ueval import get_expocode_map
 def init_denoise_df(df, n_recs=10, n=64):
     """
     Initialize a DataFrame for denoising with the required columns.
+    Parameters
+    df : pandas.DataFrame
+        Input dataframe containing cruise data
+    n_recs : number of samples per cruise
+    n : padding size for each cruise
     """
     rec_cols = [f'rec_{i}' for i in range(n_recs)]
     df = reflect_dataframe_edges(df, n=n) # pad edges of each cruise
@@ -114,29 +120,42 @@ def get_segments_fast(df, cols, num_windows=64, step=64, offset=0):
     # This is not optimal, but it is much easier and faster to implement.
     return windows 
 
-def step_get_samples(model, t, dataloader, noise_scheduler):
+def step_get_samples(model, t, dataloader, noise_scheduler, jump=None):
+    """
+    Perform a single step of sampling from the model.
+    """
     outs = []
     with torch.inference_mode():
         for batch in dataloader:                    # batch is CPU
             batch = batch.to(model.device, non_blocking=True)
-            sample = diffusion_step(model, noise_scheduler, batch, t, jump=None)
+            sample = diffusion_step(model, noise_scheduler, batch, t, jump=jump)
             outs.append(sample.cpu().numpy())
     return np.concatenate(outs, axis=0).squeeze(axis=1)  # (N, L)
 
 
 def segment_rec_df(df, predictors, n_recs, segment_len=64):
     """
-    Segment the DataFrame into smaller chunks for processing.
-    Include data as well as indexing information (expocode_id, window_id, rec_id)
+    Segments a DataFrame into fixed-length sequences for model input, including indexing information.
+    Parameters:
+        df (pd.DataFrame): Input DataFrame containing cruise data.
+        predictors (list): List of predictor column names to include.
+        n_recs (int): Number of samples for each cruise.
+        segment_len (int, optional): Length of each segment. Default is 64.
+    Returns:
+        np.ndarray: Array of segmented data with indexing columns (expocode_id, window_id, rec_id).
     """
     segments = []
     cols =  predictors + ['expocode_id', 'window_id']
     random_offset = np.random.randint(0, 64, size=n_recs)
     for i in range(n_recs):
+        # construct segments for sample i
         rec = f'rec_{i}'
-        segments_rec = get_segments_fast(df, [rec] + cols, offset=random_offset[i]) # get segments for every sample with a different offset
-        rec_col = np.full_like(segments_rec[:, 0:1, :], i) # column storing sample id for assigning to correct column after denoising step
-        segments_rec = np.concatenate([segments_rec, rec_col], axis=1) # concat data and sample id column (each datapoint is now indexed by: expocode_id, window_id, rec_id)
+        # get segments for every sample with a different offset
+        segments_rec = get_segments_fast(df, [rec] + cols, offset=random_offset[i], num_windows=segment_len)
+        # column storing sample id for assigning to correct column after denoising step
+        rec_col = np.full_like(segments_rec[:, 0:1, :], i)
+        # concat data and sample id column (each datapoint is now indexed by: expocode_id, window_id, rec_id)
+        segments_rec = np.concatenate([segments_rec, rec_col], axis=1)
         segments.append(segments_rec)
 
     segments = np.concatenate(segments, axis=0)
@@ -146,6 +165,10 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 import time
 def denoise_df(df, model_info, n_recs, jump=20):
+    """
+    Generate smooth track samples using shifting procedure outlines in Section 3.3 of the writeup
+    Not used anymore
+    """
     params = model_info['params']
     predictors = params['predictors']
     model = model_info['model']
@@ -156,9 +179,6 @@ def denoise_df(df, model_info, n_recs, jump=20):
         beta_schedule=noise_scheduler.config.beta_schedule,
         clip_sample_range=noise_scheduler.config.clip_sample_range,
        )
-    #timesteps = np.concatenate((np.arange(0, 40, 2), np.arange(40, 1000, 20)))[::-1]
-    #print(timesteps)
-    # /opt/conda/lib/python3.10/site-packages/diffusers/schedulers/scheduling_ddim.py, line 335 for passing inference steps as list
     ddim_scheduler.set_timesteps(50)
    
     stats = {
@@ -198,9 +218,25 @@ def denoise_df(df, model_info, n_recs, jump=20):
 
 def denoise_df_2(df, model_info, n_recs, jump=None, n=64):
     """
-    Generate smooth track samples using shifting procedure outlines in Section 3.3 of the writeup
-    This version was made mostly with chatGPT to move all data processing to numpy arrays.
-    Denoise_df was made by me and works with dataframes (easier to index, but much slower)
+    Generate smooth track samples using a shifting procedure for denoising, as outlined in Section 3.3 of the writeup.
+    This function processes data using numpy arrays for efficiency and applies a denoising diffusion model to reconstruct tracks.
+    (Written mostly with chatgpt)
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input dataframe containing the data to be denoised.
+    model_info : dict
+        Dictionary containing model, noise scheduler, and normalization parameters.
+    n_recs : int
+        Number of samples per cruise track.
+    jump : int, optional
+        Step size for timesteps in the denoising loop. If None, all timesteps are used (usually the case when using a DDIM sampler)
+    n : int, default=64
+        Window size or number of points per segment.
+    Returns
+    -------
+    denoise_df : pandas.DataFrame
+        DataFrame containing the denoised tracks with reconstructed values.
     """
     params = model_info['params']
     predictors = params['predictors']
@@ -223,7 +259,7 @@ def denoise_df_2(df, model_info, n_recs, jump=None, n=64):
 
     df.loc[:, predictors] = normalize(df.loc[:, predictors], stats, params['mode'])
     denoise_df = init_denoise_df(df, n_recs=n_recs, n=n) # initialize dataframe for procedure
-    rec_cols = [f'rec_{i}' for i in range(n_recs)]
+    rec_cols = [f'rec_{i}' for i in range(n_recs)] # specify names of sample columns in final dataframe
 
     # Ensure integer dtypes for keys (helps get_indexer)
     denoise_df['expocode_id'] = denoise_df['expocode_id'].astype(np.int64)
@@ -239,7 +275,8 @@ def denoise_df_2(df, model_info, n_recs, jump=None, n=64):
     model.to(device)
 
     for t in t_loop:
-        ds = segment_rec_df(denoise_df, predictors, n_recs) # split cruise in segments and include indexing information
+        # split cruise in segments and include indexing information
+        ds = segment_rec_df(denoise_df, predictors, n_recs)
 
         # indexing info
         expo_ids = ds[:, -3, :].astype(np.int64)  # (N, L)
@@ -252,7 +289,7 @@ def denoise_df_2(df, model_info, n_recs, jump=None, n=64):
         dataloader = DataLoader(model_input, batch_size=2048, shuffle=False, pin_memory=True)
 
         # get denoised samples using the model
-        samples = step_get_samples(model, t, dataloader, ddim_scheduler)  # (N, L)
+        samples = step_get_samples(model, t, dataloader, ddim_scheduler, jump=jump)  # (N, L)
 
         # Vectorised row lookup: -1 where (expocode_id, window_id) is missing
         idx = pd.MultiIndex.from_arrays([expo_ids.ravel(), windows.ravel()])
@@ -298,7 +335,7 @@ df_test = df.loc[df.expocode.map(mask_test), :]
 
 expocodes = ["AG5W20141113", "33RO20180307", "49P120060717", "49P120100104", "AG5W20141113", "AG5W20151120", "AG5W20170115"]
 #expocodes = df_val.expocode.unique()
-n_recs = 50
+n_recs = 50 # number of samples for each track
 rec_cols = [f'rec_{i}' for i in range(n_recs)]
 model_info = models['dm']
 #model_info['model'].set_w(0.5) # set classifier-free guidance weight
@@ -324,4 +361,4 @@ def trim(df):
     
 ds = ds.groupby("expocode").apply(trim)
 print(f"shape ds: {ds.shape}")
-ds.to_parquet(f'{save_path}test_imputed.pq')
+ds.to_parquet(f'{save_path}selection_imputed.pq')
