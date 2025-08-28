@@ -152,7 +152,7 @@ def prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, class_em
 
 
 def full_denoise(model, noise_scheduler, context_loader, jump=None, pos_encodings_start=None, eta=0.0):
-    """full denoising loop for diffusion model"""
+    """full denoising loop for diffusion model. Denoises segments provided in dataloader independently"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}")
     model.to(device)
@@ -324,6 +324,7 @@ def add_clims(df, co2_clim):
     return df
 
 def add_xco2(df, xco2_mbl):
+    """add atmospheric co2 data to the dataframe"""
     selector = df[['lat', 'time_1d']].to_xarray()
     # rename the columns to match the xarray dataset
     selector = selector.rename({'time_1d': 'time'})
@@ -336,9 +337,11 @@ def add_xco2(df, xco2_mbl):
 import xarray as xr
 def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_log=True, add_clim=True, add_seas=True):
     """prepare dataframe for training
-        - the idea is to use it for "segment independent" feature extraction (which is easier to do in a dataframe)
-        - this is a bit of a hack, but it works for now
-        - should be usable for learning pointwise estimates and the segmented estimates
+        - adds positional and temporal encodings
+        - adds climatologies data (both fco2 and satellite)
+        - removes fco2 measurements in marignal seas using seamask
+        - subtracts atmospheric co2 trend from fco2
+        - removes delta_fco2 values greater than 400
     """
     logger = make_logger(logger)
     if not isinstance(dfs, list):
@@ -657,6 +660,7 @@ def get_segments(df, cols, num_windows=64, step=64, offset=0):
     return cruise_ds
 
 def make_monthly_split(df, month_step=7, val_offset=3, leave_out_2021=False):
+    """make a monthly split of the dataframe df into train, val and test sets."""
     end_year = 2022 if not leave_out_2021 else 2021
     print(f"Splitting data into train/val/test with parameters: month_step={month_step}, val_offset={val_offset}, leave_out_2021={leave_out_2021}")
 
