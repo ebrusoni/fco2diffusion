@@ -63,6 +63,23 @@ def normalize(df, stats, mode):
     return df
 
 def get_patch_ds(params, patch_ix, patch_size, date, nside, dss=None):
+    """
+    This function collocates satellite data to the specified Healpix patch and date.
+    It adds positional encodings and normalizes the data as well. Finally, some additional data useful for indexing is added
+    Args:
+        params (dict): Dictionary containing model parameters, including predictor names,
+            normalization statistics, and mode.
+        patch_ix (int): Healpix index specifying the patch.
+        patch_size (int): Number of pixels in the patch (should be a perfect square).
+        date (datetime or str): Date for which to extract the data patch.
+        nside (int): Healpix nside parameter defining the resolution.
+        dss (optional): Optional preloaded dataset for the specified date. If None, the dataset
+            will be loaded internally.
+    Returns:
+        np.ndarray: Array of shape (sqrt(patch_size), sqrt(patch_size), num_features + 5)
+            containing the processed predictors, seamask, and indexing information for the patch.
+    """
+    
     predictors = params['predictors']
     stats = {
     'means':params['train_means'],
@@ -73,12 +90,12 @@ def get_patch_ds(params, patch_ix, patch_size, date, nside, dss=None):
 
     # get the patch coordinates
     xyf, lon, lat, patch_pix = get_nested_patch(patch_ix, patch_size, nside=nside)
-    #lon, lat = do_rot(lon, lat, (0, 0, 20)) # slightly rotate in case for better centering
-    #lon = lon % 360 # remap lon coordinates to 0-360 (ALWAYS DO THIS IF ROTATING)
+    lon, lat = do_rot(lon, lat, (30, 0, 0)) # slightly rotate in case for better centering
+    lon = lon % 360 # remap lon coordinates to 0-360 (ALWAYS DO THIS IF ROTATING)
     
     ring_id = hp.nest2ring(nside, patch_pix) # get indices in ring order
     if dss is None:
-        dss = get_day_dataset(date) # get data for specified date
+        dss = get_day_dataset(date) # get data for specified date if not available
     coords = pd.DataFrame({
         'lon': lon.flatten(),
         'lat': lat.flatten(),
@@ -90,7 +107,7 @@ def get_patch_ds(params, patch_ix, patch_size, date, nside, dss=None):
     })
     coords['time_1d'] = date
     
-    # collocate the data to the coordinates in the patch/field
+    # collocate the satellite data to the coordinates in the patch/field
     context_df = collocate_coords(coords, dss, date)
     
     context_df['lon'] = (context_df['lon'] + 180) % 360 - 180
@@ -123,6 +140,7 @@ def get_patch_ds(params, patch_ix, patch_size, date, nside, dss=None):
     return context_ds
 
 def do_step_loader(model, noise_scheduler, dataloader, t, device, jump, eta):
+    """Performs a denoising step given timestep, data and model"""
     samples = []
     for (ix, batch) in enumerate(dataloader):
         with torch.no_grad():
@@ -611,18 +629,18 @@ ddim_scheduler = DDIMScheduler(
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 n_steps = 50
 ddim_scheduler.set_timesteps(n_steps, device=device)
-n=1
+n=10
 nside = 2**10
 npix = hp.nside2npix(nside)
 face_pixs = npix//12
-num_subfaces = 4 # number of subfaces must be a power of 4
+num_subfaces = 1 # number of subfaces must be a power of 4
 patch_size = face_pixs // num_subfaces
 print(f"Patch size: {patch_size}")
 
-patch_ix = 31 # select index of the patch to be denoised, there are 12*num_subfaces
+patch_ix = 7 # select index of the patch to be denoised, there are 12*num_subfaces
 samples = []
-start_date ='2022-01-01' 
-date_range = pd.date_range(start=start_date, end='2022-03-01', freq='D')
+start_date ='2022-06-01' 
+date_range = pd.date_range(start=start_date, end='2022-10-01', freq='D')
 dfs = []
 dfs_cond = []
 date_range_loop = tqdm(date_range, desc="Processing dates")
@@ -668,7 +686,8 @@ for date in date_range_loop:
     # renoise sample for next day conditioning
     start_sample = torch.from_numpy(sample[:, :, :n])
     start_sample = ddim_scheduler.add_noise(start_sample, torch.randn_like(start_sample), timesteps[n_steps // 2 - 1]).numpy()
+    
     date_range_loop.set_postfix(date=date.strftime('%Y-%m-%d'), shape=df.shape)
 
 dfs["seamask"] = seamask.flatten()
-dfs.to_parquet(f'{save_path}papagayo.pq')
+dfs.to_parquet(f'{save_path}eq_pac2.pq')
