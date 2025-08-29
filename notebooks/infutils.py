@@ -47,7 +47,7 @@ REGIONS = dict(
 )
 
 
-def plot_dfco2_regions(dfco2_single_timestep: xr.DataArray)->tuple:
+def plot_dfco2_regions(dfco2_single_timestep: xr.DataArray, vmins, vmaxs, title)->tuple:
     """
     Plot a single timestep of the dfco2 data array on a map.
 
@@ -68,6 +68,7 @@ def plot_dfco2_regions(dfco2_single_timestep: xr.DataArray)->tuple:
     da = dfco2_single_timestep
     
     fig = plt.figure(figsize=[8, 5.7], dpi=200)
+    fig.suptitle(title)
     spec = fig.add_gridspec(ncols=3, nrows=2)
     ax = [
         fig.add_subplot(spec[0, 0], projection=crs.PlateCarree()),
@@ -78,11 +79,11 @@ def plot_dfco2_regions(dfco2_single_timestep: xr.DataArray)->tuple:
     ]
 
     img = [
-        plot_regional_map(da.sel(**REGIONS['capeverd']),  ax=ax[0]),
-        plot_regional_map(da.sel(**REGIONS['califcur']),  ax=ax[1]),
-        plot_regional_map(da.sel(**REGIONS['gapwinds']),  ax=ax[2]),
-        plot_regional_map(da.sel(**REGIONS['malvinas']),  ax=ax[3]),
-        plot_regional_map(da.sel(**REGIONS['eqpacifc']),  ax=ax[4])]
+        plot_regional_map(da.sel(**REGIONS['capeverd']), vmins[0], vmaxs[0],  ax=ax[0]),
+        plot_regional_map(da.sel(**REGIONS['califcur']), vmins[1], vmaxs[1],  ax=ax[1]),
+        plot_regional_map(da.sel(**REGIONS['gapwinds']), vmins[2], vmaxs[2],  ax=ax[2]),
+        plot_regional_map(da.sel(**REGIONS['malvinas']), vmins[3], vmaxs[3],  ax=ax[3]),
+        plot_regional_map(da.sel(**REGIONS['eqpacifc']), vmins[4], vmaxs[4],  ax=ax[4])]
 
     fig.subplots_adjust(hspace=0.3, wspace=0.11)
 
@@ -109,9 +110,9 @@ def plot_dfco2_regions(dfco2_single_timestep: xr.DataArray)->tuple:
 
 
 
-def plot_regional_map(da, **kwargs):
+def plot_regional_map(da, vmin, vmax, **kwargs):
 
-    props = dict(cmap='inferno', robust=True, add_colorbar=False, interpolation='nearest', rasterized=True)
+    props = dict(cmap='viridis', robust=True, add_colorbar=False, interpolation='nearest', rasterized=True, vmin=vmin, vmax=vmax)
 
     if kwargs.get('ax', None) is None:
         print('added subplot')
@@ -124,6 +125,10 @@ def plot_regional_map(da, **kwargs):
 
     da = da.squeeze().ffill('lon', limit=1).bfill('lon', limit=1).ffill('lat', limit=1).bfill('lat', limit=1)
     img = da.plot.imshow(**props)
+    
+    # Access vmin/vmax actually used
+    print("vmin:", img.norm.vmin)
+    print("vmax:", img.norm.vmax)
 
     img.date = da.time.values.astype('datetime64[D]')
     
