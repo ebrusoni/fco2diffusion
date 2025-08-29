@@ -148,6 +148,8 @@ pred_mask = pd.read_parquet("../models/anoms_sea_1d/pred_nans.pq")
 
 # match variances
 dm_samples = [f"sample_{i}" for i in range(50)]
+# check same ordering for both dataframes
+assert np.allclose(dm_preds.fco2rec_uatm.values, df_test.fco2rec_uatm.values, equal_nan=True)
 dm_std = dm_preds.loc[pred_mask.values, dm_samples].std(axis=1).mean()
 mlp_std = df_test.loc[pred_mask.values, mlp_pred_cols].std(axis=1).mean()
 print(f"diffusion model mean std: {dm_std}")
