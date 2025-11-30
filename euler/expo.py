@@ -5,7 +5,6 @@ from utils import add_src_and_logger
 save_dir = None
 is_renkulab = True
 DATA_PATH, logging = add_src_and_logger(is_renkulab, None)
-# from diffusers import DDIMScheduler
 from mydiffusers.scheduling_ddim import DDIMScheduler
 np.random.seed(0)
 
@@ -14,7 +13,6 @@ def normalize(df, stats, mode):
         col = df.columns[i]
         # print(f"Normalizing {col} with {mode}")
         if mode == 'min_max':
-            # print(f"Min: {stats['mins'][i]}, Max: {stats['maxs'][i]}")
             df[col] = 2 * (df[col] - stats['mins'][i + 1]) / (stats['maxs'][i + 1] - stats['mins'][i + 1]) - 1
         elif mode == 'mean_std':
             df[col] = (df[col] - stats['means'][i + 1]) / stats['stds'][i + 1]
@@ -197,14 +195,12 @@ def denoise_df(df, model_info, n_recs, jump=20):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     for t in t_loop:
-        start = time.time()
         ds = segment_rec_df(denoise_df, predictors, n_recs)
         
         expo_ids = ds[:, -3, :].astype(int)
         windows = ds[:, -2, :].astype(int)
-        #print(windows)
         recs = ds[:, -1, :].astype(int)
-        end = time.time()
+        
         model_input = np.concatenate([ds[:, :-3, :], np.ones_like(ds[:, 0:1, :])], axis=1)
         model_input = torch.from_numpy(model_input).float().to(model.device)
         dataloader = DataLoader(model_input, batch_size=2048, shuffle=False)
@@ -322,12 +318,6 @@ model_dict = {
 models = load_models(model_dict)
 df = pd.read_parquet(DATA_PATH + "SOCAT_1982_2021_grouped_colloc_augm_bin.pq", engine='pyarrow')
 df = prep_df(df, bound=True)[0]
-df['sst_clim'] += 273.15
-df['sst_anom'] = df['sst_cci'] - df['sst_clim']
-df['sss_anom'] = df['sss_cci'] - df['sss_clim']
-df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
-df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
-df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim']
 mask_train, mask_val, mask_test = make_monthly_split(df)
 df_train = df.loc[df.expocode.map(mask_train), :]
 df_val = df.loc[df.expocode.map(mask_val), :]

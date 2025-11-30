@@ -36,12 +36,7 @@ logging.info("Training with larger random dataset")
 
 df = pd.read_parquet(DATA_PATH + "SOCAT_1982_2021_grouped_colloc_augm_bin.pq")
 df = prep_df(df, bound=True, logger=logging)[0]
-df['sst_clim'] += 273.15
-df['sst_anom'] = df['sst_cci'] - df['sst_clim']
-df['sss_anom'] = df['sss_cci'] - df['sss_clim']
-df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
-df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
-df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim'] # climatology is calculated on log mixed-layer depth
+
 print(df.fco2rec_uatm.max(), df.fco2rec_uatm.min())
 print(f"dataset shape: {df.shape}")
 
@@ -57,7 +52,6 @@ assert df_train.expocode.isin(df_test.expocode).sum() == 0, "expocode ids overla
 print(f"training dataset shape: {df_train.shape}")
 print(f"validation dataset shape: {df_val.shape}")
 print(f"test dataset shape: {df_test.shape}")
-#print(df_train.fco2rec_uatm.max(), df_train.fco2rec_uatm.min())
 
 
 target = "fco2rec_uatm"
@@ -170,30 +164,6 @@ if dm == "UNet2D" or dm == "UNet2DL":
 num_epochs = 300
 timesteps = 1000
 
-#layers_per_block = 2
-#down_block_types = ('DownBlock2D', 'DownBlock2D')
-#up_block_types = ('UpBlock2D', 'UpBlock2D')
-#model_params = {
-#    "sample_size": (14, 64),
-#    "in_channels": 1,
-#    "out_channels": 1,
-#    "layers_per_block": layers_per_block,
-#    "block_out_channels": (16, 32),
-#    "down_block_types": down_block_types,
-#    "up_block_types": up_block_types,
-#    "norm_num_groups": 16,
-    #"class_embed_type": "Identity",
-    #"num_class_embeds": None, 
-#}
-#model_params={
-#    "unet_config": model_params,
-#    "ship_mix_cols": [13, 14]
-#}
-#model_params = {
-#    "unet_config": model_params,
-#    "keep_channels": [13],
-#    "num_channels": None
-#}
 #model_params= {
 #   "feat_dim": len(model_inputs) + 1, # add mask and timestep channels
 #   "max_len": 65,
@@ -205,25 +175,10 @@ timesteps = 1000
 #   "activation": "relu",
 #   "pos_encoding": "learnable"
 #}
-#model_params = {
-#    "ensemble_size": 10,
-#    "diffusion_class": "fco2models.models.UNet2DModelWrapper",
-#    "diffusion_kwargs": model_params
-#}
 
-
-#model = UNet2DModelWrapper(**model_params)
 def count_trainable_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Number of trainable parameters: {count_trainable_parameters(model)}")
-
-# model_params = {
-#     "input_dim": 64*(ds.shape[1] + 1),
-#     "output_dim": 64,
-#     "hidden_dims": [64*5, 64*3],
-#     "dropout_prob": 0.0
-#     }
-# model = MLP(**model_params, num_timesteps=timesteps)
 
 model.to('cuda')
 optimizer = optim.AdamW(model.parameters(), lr=lr)
@@ -277,10 +232,6 @@ with open(save_dir +'hyperparameters.json', 'w') as f:
     param_dict = json.dumps(param_dict, indent=4)
     f.write(param_dict)
 
-# class_embedder = ClassEmbedding(dim_classes=len(positional_encoding), 
-#                                 output_dim=16*4, 
-#                                 num_classes=[100]*len(positional_encoding)
-#                                 )
 model, train_losses, val_losses = train_diffusion(model,
                                                   num_epochs=num_epochs,
                                                   old_epoch=epoch, 

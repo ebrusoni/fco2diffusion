@@ -112,14 +112,8 @@ def get_patch_ds(params, patch_ix, patch_size, date, nside, dss=None):
     
     context_df['lon'] = (context_df['lon'] + 180) % 360 - 180
     context_df = prep_df(context_df, with_target=False, with_log=False)[0]
-    context_df['sst_clim'] += 273.15
-    context_df['sst_anom'] = context_df['sst_cci'] - context_df['sst_clim']
-    context_df['sss_anom'] = context_df['sss_cci'] - context_df['sss_clim']
-    context_df['chl_anom'] = context_df['chl_globcolour'] - context_df['chl_clim']
-    context_df['ssh_anom'] = context_df['ssh_sla'] - context_df['ssh_clim']
-    context_df['mld_anom'] = np.log10(context_df['mld_dens_soda'] + 1e-5) - context_df['mld_clim']
     
-    context_df = context_df[predictors + ['seamask', 'x', 'y']] #extract only predictors plus seamask and indexing columns
+    context_df = context_df[predictors + ['seamask', 'x', 'y']] # extract only predictors plus seamask and indexing columns
     context_df = normalize(context_df, stats, params['mode'])
     context_df = context_df.fillna(context_df.mean())  # fill NaNs with mean of each column
 

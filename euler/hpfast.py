@@ -324,12 +324,6 @@ def infer_patch_with_rotations_gpu(
     context_df["lon"] = (context_df["lon"] + 180) % 360 - 180 # normalize lon to [-180, 180]
     # do the same preprocessing as in training (add positional/temporal encodings, sea mask, climatologies)
     df = prep_df(context_df, with_target=False, with_log=True)[0]
-    df["sst_clim"] += 273.15
-    df["sst_anom"]  = df["sst_cci"] - df["sst_clim"]
-    df["sss_anom"]  = df["sss_cci"] - df["sss_clim"]
-    df["chl_anom"]  = df["chl_globcolour"] - df["chl_clim"]
-    df["ssh_anom"]  = df["ssh_sla"] - df["ssh_clim"]
-    df["mld_anom"]  = np.log10(df["mld_dens_soda"] + 1e-5) - df["mld_clim"] # mld_clim is in log scale
 
     # conditioning provided by predictors from training plus marginal sea mask
     context_df = df.loc[:, params["predictors"]+["seamask"]] 
@@ -339,6 +333,7 @@ def infer_patch_with_rotations_gpu(
         "mins":  params["train_mins"],
         "maxs":  params["train_maxs"],
     }
+    
     context_df = normalize(context_df, stats, params["mode"]) # normalize with training statistics
     context_df = context_df.fillna(context_df.mean()) # impute all nans to avoid invalid predictions
     print(f"Preprocessed data shape: {context_df.shape}")
@@ -528,12 +523,11 @@ from fco2models.ueval import load_model
 save_path = '../models/anoms_sea_1d/'
 model_path = 'e_200.pt'
 model_class = UNet1DModelWrapper
-model, noise_scheduler, params, losses = load_model(save_path, model_path, model_class,training_complete=True)
+model, noise_scheduler, params, losses = load_model(save_path, model_path, model_class, training_complete=True)
 print("model loaded")
 print("predictors:", params['predictors'])
 date = pd.Timestamp('2022-10-04')
-nside = 2**10
-
+nside = 2**10 # definition of healpix resolution
 #from diffusers import DDIMScheduler
 from mydiffusers.scheduling_ddim import DDIMScheduler
 #model.set_w(1)
@@ -543,17 +537,9 @@ ddim_scheduler = DDIMScheduler(
     clip_sample_range=noise_scheduler.config.clip_sample_range,
     #timestep_spacing="trailing"
     )
-#timesteps = np.concatenate((np.arange(0, 20, 2), np.arange(40, 1000, 20)))[::-1]
-#print(timesteps)
-#print(len(timesteps))
-# /opt/conda/lib/python3.10/site-packages/diffusers/schedulers/scheduling_ddim.py, line 335 for passing inference steps as list
-# 1. get previous step value (=t-1)
-# idx = (self.timesteps == timestep).nonzero(as_tuple=True)[0].item()
-# prev_timestep = self.timesteps[idx + 1] if idx+1 < self.num_inference_steps else -1
-## prev_timestep = timestep - self.config.num_train_timesteps // self.num_inference_steps
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ddim_scheduler.set_timesteps(50, device=device, steps=None)
-n=20
+n=20 # number of samples
 df = infer_patch_with_rotations_gpu(model, ddim_scheduler, params, date, nside=nside, jump=None, n_samples=n, device=device)
 sample_cols = [f"sample_{i}" for i in range(n)]
 # renormalize and add xco2 offset 

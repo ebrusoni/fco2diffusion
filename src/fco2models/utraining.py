@@ -408,6 +408,13 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_lo
             clims_df = clims_df.rename(columns=lambda col: col + "_clim")
             # add climatology data to the dataframe
             df = pd.concat([df, clims_df], axis=1)
+            # create anomaly columns
+            df['sst_clim'] += 273.15
+            df['sst_anom'] = df['sst_cci'] - df['sst_clim']
+            df['sss_anom'] = df['sss_cci'] - df['sss_clim']
+            df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
+            df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
+            df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim'] # climatology is calculated on log mixed-layer depth
 
         if add_seas:
             if with_log:
@@ -507,7 +514,6 @@ def get_stats(ds, logger=None):
         'mins': mins,
         'maxs': maxs
     }
-    
     
     
 def load_checkpoint(path, model, optimizer, scheduler=None, logger=None):
@@ -720,25 +726,6 @@ def impute_df(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     """
     Linearly interpolate missing values in `cols` within each 'expocode' group.
     Returns a new DataFrame; original is unchanged.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input dataframe containing an 'expocode' column.
-    cols : list[str]
-        Columns to interpolate. Must all be numeric.
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with interpolated values in `cols`, per 'expocode'.
-
-    Raises
-    ------
-    KeyError
-        If 'expocode' or any of the requested columns are missing.
-    TypeError
-        If any column in `cols` is not numeric.
     """
     if 'expocode' not in df.columns:
         raise KeyError("DataFrame must contain an 'expocode' column.")

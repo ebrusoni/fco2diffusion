@@ -25,12 +25,6 @@ print("Model loaded")
 # load data
 df = pd.read_parquet(DATA_PATH + "SOCAT_1982_2021_grouped_colloc_augm_bin.pq")
 df = prep_df(df, bound=True)[0]
-df['sst_clim'] += 273.15
-df['sst_anom'] = df['sst_cci'] - df['sst_clim']
-df['sss_anom'] = df['sss_cci'] - df['sss_clim']
-df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
-df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
-df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim'] # mixed-layer depth climatology is in log scale
 # map expocode column to int
 expocode_map = df['expocode'].unique()
 expocode_map = {expocode: i for i, expocode in enumerate(expocode_map)}
@@ -50,16 +44,13 @@ print(df_train.fco2rec_uatm.max(), df_train.fco2rec_uatm.min())
 
 print(f"train df shape: {df_train.shape}, val df shape: {df_val.shape}, test df shape: {df_test.shape}")
 
-
 target = "fco2rec_uatm"
 predictors = params["predictors"]
-#predictors = predictors[1:] # REMOVE AFTERWRADS
 coords = ['expocode_id', 'window_id']
 all_cols = predictors + coords
 cols = [target] + all_cols
 
 train_stats = get_stats_df(df_train, [target] + predictors) # get training set stats (mean, std, min, max)
-
 
 def prep_for_eval(df, predictors, coords):
     target = "fco2rec_uatm"
@@ -73,7 +64,6 @@ def prep_for_eval(df, predictors, coords):
     ds_input = ds[:, :-n_coords, :]  # remove expocode and window_id
     ds_index = ds[:, -n_coords:, :]
     return ds_input, ds_index # index is used when rearranging the samples back in the dataframe
-
 
 train_ds, train_index = prep_for_eval(df_train, predictors, coords)
 val_ds, val_index = prep_for_eval(df_val, predictors, coords)
