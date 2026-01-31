@@ -30,12 +30,12 @@ torch.cuda.manual_seed(0)
 lr = 1e-3
 batch_size = 128
 
-
-logging.info("------------ Starting training ------------------")
-logging.info("Training with larger random dataset")
+logger = logging.getLogger(__name__)
+logger.info("------------ Starting training ------------------")
+logger.info("Training with larger random dataset")
 
 df = pd.read_parquet(DATA_PATH + "SOCAT_1982_2021_grouped_colloc_augm_bin.pq")
-df = prep_df(df, bound=True, logger=logging)[0]
+df = prep_df(df, bound=True, logger=logger)[0]
 
 print(df.fco2rec_uatm.max(), df.fco2rec_uatm.min())
 print(f"dataset shape: {df.shape}")
@@ -43,15 +43,15 @@ print(f"dataset shape: {df.shape}")
 mask_train, mask_val, mask_test = make_monthly_split(df) # split expocodes by month as in gregor2024
 df_train = df[df.expocode.map(mask_train)]
 df_val = df[df.expocode.map(mask_val)]
-print(df_val.seamask.sum()/df_val.shape[0])
+logger.info(f"Validation seamask ratio: {df_val.seamask.sum()/df_val.shape[0]}")
 df_test = df[df.expocode.map(mask_test)]
-print(df_train.shape, df_val.shape, df_test.shape)
+logger.info(f"Shapes - Train: {df_train.shape}, Val: {df_val.shape}, Test: {df_test.shape}")
 assert df_val.expocode.isin(df_test.expocode).sum() == 0, "expocode ids overlap between validation and test sets"
 assert df_train.expocode.isin(df_val.expocode).sum() == 0, "expocode ids overlap between train and validation sets"
 assert df_train.expocode.isin(df_test.expocode).sum() == 0, "expocode ids overlap between train and test sets"
-print(f"training dataset shape: {df_train.shape}")
-print(f"validation dataset shape: {df_val.shape}")
-print(f"test dataset shape: {df_test.shape}")
+logger.info(f"training dataset shape: {df_train.shape}")
+logger.info(f"validation dataset shape: {df_val.shape}")
+logger.info(f"test dataset shape: {df_test.shape}")
 
 
 target = "fco2rec_uatm"
@@ -64,7 +64,7 @@ socat_data =  []#["sst_deg_c", "sal"]
 cols = model_inputs + socat_data
 
 # divide the cruise tracks (indexed by expocodes) in segments of length 64
-train_stats = get_stats_df(df_train, model_inputs + socat_data, logger=logging) # gets means, stds, maxs and mins for every column, used for normalizing
+train_stats = get_stats_df(df_train, model_inputs + socat_data) # gets means, stds, maxs and mins for every column, used for normalizing
 segment_df_train = df_train.groupby("expocode").apply(
     lambda x: get_segments_random(x, cols, n=4),
     include_groups=False,
@@ -74,8 +74,7 @@ train_ds = train_socat_ds[:, :, :] # here we remove the socat ship measurements 
 #socat_ds = train_socat_ds[:, -2:, :]
 # convert to kelvin
 #socat_ds[:, 0, :] += 273.15
-#train_ds = replace_with_cruise_data(train_ds, socat_ds, prob=0.5, logger=logging)
-#train_ds = perturb_fco2(train_ds, logger=logging)
+#train_ds = replace_with_cruise_data(train_ds, socat_ds, prob=0.5)
 
 segment_df_val = df_val.groupby("expocode").apply(
     lambda x: get_segments(x, model_inputs),
@@ -89,7 +88,7 @@ segment_df_test = df_test.groupby("expocode").apply(
 test_ds = np.concatenate(segment_df_test.values, axis=0)
 
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
-train_context_mask, val_context_mask, test_context_mask = get_context_mask([train_ds, val_ds, test_ds], logger=logging) # mask to filter out invalid context containing Nans
+train_context_mask, val_context_mask, test_context_mask = get_context_mask([train_ds, val_ds, test_ds]) # mask to filter out invalid context containing Nans
 train_ds = train_ds[train_context_mask]
 #socat_ds = socat_ds[train_context_mask]
 val_ds = val_ds[val_context_mask]
@@ -99,12 +98,11 @@ print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds 
 
 mode = 'mean_std' # z-normalization
 #train_ds = np.concatenate([train_ds, socat_ds], axis=1)
-train_ds, val_ds, test_ds = normalize_dss([train_ds, val_ds, test_ds], train_stats, mode, ignore=[], logger=logging) # normalize
+train_ds, val_ds, test_ds = normalize_dss([train_ds, val_ds, test_ds], train_stats, mode, ignore=[]) # normalize
 
 # count nans in first column of the dataset
 print(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
-logging.info(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
-
+logger.info(f"train_ds shape: {train_ds.shape}, val_ds shape: {val_ds.shape}, test_ds shape: {test_ds.shape}")
 # print mins and maxs of the data
 for i in range(train_ds.shape[1]):
     print(f"train_ds {i} min: {np.nanmin(train_ds[:, i, :])}, max: {np.nanmax(train_ds[:, i, :])}")
@@ -129,7 +127,7 @@ if dm == "UNet1D" or dm == "Guidance-UNet1D":
          "use_timestep_embedding": True,
          "act_fn": "relu"
     }
-    logging.info("Using UNet1DModel")
+    logger.info("Using UNet1DModel")
 
     if dm == "UNet1D":
         # epoch 200 is the best one usually
@@ -226,7 +224,7 @@ param_dict = {
     "mode": mode,
     }
 
-logging.info("All parameters: %s", param_dict)
+logger.info("All parameters: %s", param_dict)
 # save the model parameters to a json file
 with open(save_dir +'hyperparameters.json', 'w') as f:
     param_dict = json.dumps(param_dict, indent=4)
@@ -251,6 +249,6 @@ save_losses_and_png_diffusion(
     noise_scheduler.config.num_train_timesteps,
     )
 
-logging.info("Completed training")
-logging.info("Training losses: %s", train_losses)
-logging.info("Validation losses: %s", val_losses)
+logger.info("Completed training")
+logger.info("Training losses: %s", train_losses)
+logger.info("Validation losses: %s", val_losses)

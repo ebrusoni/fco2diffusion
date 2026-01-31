@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
 import numpy as np
+import logging
 # import wandb
 from tqdm import tqdm
 from diffusers.optimization import get_cosine_schedule_with_warmup
@@ -10,6 +11,8 @@ from diffusers import DDPMScheduler, UNet1DModel
 import time
 import pandas as pd
 from fco2models.models import ClassEmbedding
+
+logger = logging.getLogger(__name__)
 
 def check_gradients(model):
     total_norm = 0
@@ -28,14 +31,12 @@ def pos_to_timestep(pos_encodings, noise_scheduler):
 import numpy as np
 # Training function
 def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataloader, noise_scheduler, optimizer, lr_scheduler, save_model_path=None, 
-                    pos_encodings_start=None, device=None, class_embedder=None):
+                    device=None):
     """training loop for diffusion model"""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}")
     model.to(device)
-    if class_embedder is not None:
-        class_embedder.to(device)
     
     loss_fn = nn.MSELoss()
     
@@ -43,16 +44,13 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
     val_losses = []
     for epoch in range(old_epoch, num_epochs):
         model.train()
-        if class_embedder is not None:
-            class_embedder.train()
         epoch_loss = 0.0
         progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")
         
         for batch in progress_bar:
             batch = batch[0].to(device)
             target = batch[:, 0:1, :] # first column is the target fco2
-            context = batch[:, 1:pos_encodings_start, :] # context is the remote sensing data
-            pos_encodings = batch[:, pos_encodings_start:, :] # position encodings are the remaining columns (not used anymore)
+            context = batch[:, 1:, :] # context is the remote sensing data
 
             noise = torch.randn_like(target).to(device).float()
             # Sample a random timestep for each image
@@ -94,15 +92,13 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
 
         # print validation loss
         model.eval()
-        if class_embedder is not None:
-            class_embedder.eval()
         t_tot = noise_scheduler.config.num_train_timesteps
         val_losses_t = []
         for t in range(0, t_tot, t_tot//10): # take validation scores for multiple timesteps t, to check convergence at multiple noise levels
             val_loss = 0.0
             for batch in val_dataloader:
                 timesteps = torch.full((batch[0].shape[0],), t, device=device, dtype=torch.long)
-                noisy_input, noise, nan_mask, timesteps, class_labels = prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, class_embedder, device)
+                noisy_input, noise, nan_mask, timesteps = prep_sample(batch, noise_scheduler, timesteps, device)
                 noise_pred = model(noisy_input, timesteps, return_dict=False)[0]
                 loss = loss_fn(noise_pred[~nan_mask], noise[~nan_mask])
                 val_loss += loss.item()
@@ -130,11 +126,10 @@ def train_diffusion(model, num_epochs, old_epoch, train_dataloader, val_dataload
     return model, train_losses, val_losses
 
 
-def prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, class_embedder, device):
+def prep_sample(batch, noise_scheduler, timesteps, device):
     batch = batch[0].to(device)
     target = batch[:, 0:1, :]
-    context = batch[:, 1:pos_encodings_start, :]
-    pos_encodings = batch[:, pos_encodings_start:, :]
+    context = batch[:, 1:, :]
     
     noise = torch.randn_like(target).to(device).float()
     # Replace nan with zeros
@@ -146,8 +141,7 @@ def prep_sample(batch, noise_scheduler, timesteps, pos_encodings_start, class_em
     noisy_input = torch.cat([noisy_target, context, (~nan_mask).float()], dim=1)
     noisy_input = noisy_input.to(device).float()
 
-    class_labels = None if pos_encodings_start is None else class_embedder(pos_encodings.int())
-    return noisy_input, noise, nan_mask, timesteps, class_labels
+    return noisy_input, noise, nan_mask, timesteps
 
 
 
@@ -456,8 +450,7 @@ def quantize_positional_encodings(dfs, positional_encodings, num_bins, logger=No
     return res
 
 
-def normalize_dss(dss, stats, mode, logger=None, ignore=None):
-    logger = make_logger(logger)
+def normalize_dss(dss, stats, mode, ignore=None):
     if ignore is None:
         ignore = []
     
@@ -466,7 +459,6 @@ def normalize_dss(dss, stats, mode, logger=None, ignore=None):
     train_stds = stats['stds']
     train_mins = stats['mins']
     train_maxs = stats['maxs']
-    logger.info("Using given stats for normalization")
     
     logger.info(f"Normalizing data using {mode} normalization")
     logger.info(f"Not normalizing features: {ignore}")
@@ -600,13 +592,12 @@ def save_losses_and_png_diffusion(train_losses, val_losses, save_dir, t_tot):
     plt.show()
 
 # STUFF FOR NEW DATASET
-def replace_with_cruise_data(segments, cruise_data, prob=0.3, logger=None):
+def replace_with_cruise_data(segments, cruise_data, prob=0.3):
     # segments has shape (n_samples, n_features, n_bins)
     # cruise_data has shape (n_samples, n_features, n_bins)
     # the first column of cruise_data is temperature, then salinity
     # these correspond to the 2nd and 3rd
     # if the cruise_data is not available, we keep the remote sensing data
-    logger = make_logger(logger)
     logger.info(f"Replacing segments with cruise data with probability {prob}")
 
     # replace with probability prob
@@ -618,14 +609,6 @@ def replace_with_cruise_data(segments, cruise_data, prob=0.3, logger=None):
     nan_mask_sal = ~np.isnan(cruise_data[mask, 1, :], axis=1)
     segments[mask, 2, nan_mask_sal] = cruise_data[mask, 1, nan_mask_sal]
 
-    return segments
-
-def perturb_fco2(segments, logger=None):
-    """perturb fco2 values in the segments with noise +-5 uatm"""
-    logger = make_logger(logger)
-    logger.info("Perturbing fco2 values with noise +-5 uatm")
-    noise = np.random.uniform(-5, 5, size=segments[:, 0, :].shape)
-    segments[:, 0, :] += noise
     return segments
     
 def get_segments_random(df, cols, num_windows=64, n=3):
@@ -681,9 +664,8 @@ def make_monthly_split(df, month_step=7, val_offset=3, leave_out_2021=False):
 
     return mask_train, mask_val, mask_test
 
-def get_stats_df(df, cols, logger=None):
+def get_stats_df(df, cols):
     """get stats for the dataframe df"""
-    logger = make_logger(logger)
     means = []
     stds = []
     mins = []
@@ -706,9 +688,8 @@ def get_stats_df(df, cols, logger=None):
         'maxs': maxs
     }
 
-def get_context_mask(dss, logger=None):
+def get_context_mask(dss):
     """returns mask for filtering out samples with Nans in the context variables"""
-    logger = make_logger(logger)
     masks = []
     for ds in dss:
         context_ds = ds[:, 1:, :]
