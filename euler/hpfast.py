@@ -118,12 +118,6 @@ def infer_patch_with_rotations(model, noise_scheduler, params, date, nside=1024,
     
     context_df['lon'] = (context_df['lon'] + 180) % 360 - 180
     df = prep_df(context_df, with_target=False, with_log=True)[0]
-    df['sst_clim'] += 273.15
-    df['sst_anom'] = df['sst_cci'] - df['sst_clim']
-    df['sss_anom'] = df['sss_cci'] - df['sss_clim']
-    df['chl_anom'] = df['chl_globcolour'] - df['chl_clim']
-    df['ssh_anom'] = df['ssh_sla'] - df['ssh_clim']
-    df['mld_anom'] = np.log10(df['mld_dens_soda'] + 1e-5) - df['mld_clim']
     context_df = df.loc[:, params['predictors']+['seamask']]
     stats = {
         'means': params['train_means'],
