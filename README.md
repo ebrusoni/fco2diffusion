@@ -1,7 +1,7 @@
 # Getting started
 Create the conda environment for this repo by running
 ```
-conda env create -f euler/environment.yml
+conda env create -f scripts/environment.yml
 ```
 this will create the environment ```fco2diffusion```. Activate the environment the usual way with
 ```
@@ -13,19 +13,19 @@ conda activate fco2diffusion
 Short descsription of the relevant python scripts and jupyter notebooks
 
 ## Training, Evaluation and Inference
-All python scripts for running and evaluating both the diffusion models and MLP ensembles are in the euler directory:
+All python scripts for running and evaluating both the diffusion models and MLP ensembles are in the scripts directory:
 
-- [newsub.py](https://github.com/ebrusoni/fco2diffusion/blob/main/euler/newsub.py) runs the diffusion model training. At the top of the script you can select which model mentioned in the write-up to train.
-- [eval.py](https://github.com/ebrusoni/fco2diffusion/blob/main/euler/euler.py) runs the evaluation on the SOCAT test set. Which model to evaluate is selected the top of the script by typing the directory where it was saved.
-- [expo.py](https://github.com/ebrusoni/fco2diffusion/blob/main/euler/euler.py) generates cruise tracks using random offsets to generate smooth samples. (Section 3.3)
-- [hpfast.py](https://github.com/ebrusoni/fco2diffusion/blob/main/euler/hpfast.py) generates samples foe the entire ocean surface using the HEALPix projection. (Section 3.3)
-- [hpface.py](https://github.com/ebrusoni/fco2diffusion/blob/main/euler/hpface.py) generates time-conditioned samples for a given period of time and patch. (Section 3.4)
+- [newsub.py](https://github.com/ebrusoni/fco2diffusion/blob/main/scripts/newsub.py) runs the diffusion model training. At the top of the script you can select which model mentioned in the write-up to train.
+- [eval.py](https://github.com/ebrusoni/fco2diffusion/blob/main/scripts/eval.py) runs the evaluation on the SOCAT test set. Which model to evaluate is selected the top of the script by typing the directory where it was saved.
+- [expo.py](https://github.com/ebrusoni/fco2diffusion/blob/main/scripts/expo.py) generates cruise tracks using random offsets to generate smooth samples. (Section 3.3)
+- [hpfast.py](https://github.com/ebrusoni/fco2diffusion/blob/main/scripts/hpfast.py) generates samples foe the entire ocean surface using the HEALPix projection. (Section 3.3)
+- [hpface.py](https://github.com/ebrusoni/fco2diffusion/blob/main/scripts/hpface.py) generates time-conditioned samples for a given period of time and patch. (Section 3.4)
 
-- [sota.py](https://github.com/ebrusoni/fco2diffusion/blob/main/euler/sota.py) trains a baseline MLP ensemble with 50 members.
-- [hpmlp.py](https://github.com/ebrusoni/fco2diffusion/blob/main/euler/hpmlp.py) generates samples for the whole ocean using a trained MLP ensemble.
-- [mlp_expo.py](https://github.com/ebrusoni/fco2diffusion/blob/main/euler/mlp_expo.py) generates cruise tracks with the MLP ensemble.
+- [sota.py](https://github.com/ebrusoni/fco2diffusion/blob/main/scripts/sota.py) trains a baseline MLP ensemble with 50 members.
+- [hpmlp.py](https://github.com/ebrusoni/fco2diffusion/blob/main/scripts/hpmlp.py) generates samples for the whole ocean using a trained MLP ensemble.
+- [mlp_expo.py](https://github.com/ebrusoni/fco2diffusion/blob/main/scripts/mlp_expo.py) generates cruise tracks with the MLP ensemble.
 
-- [utils.py](https://github.com/ebrusoni/fco2diffusion/blob/main/euler/utils.py) contains a single function to add a logger and add a path to the src folder. The path to the location of the dataset directory can also be specified here.
+- [utils.py](https://github.com/ebrusoni/fco2diffusion/blob/main/scripts/utils.py) contains a single function to add a logger and add a path to the src folder. The path to the location of the dataset directory can also be specified here.
 
 ## SOCAT Preprocessing and data collocation
 The preprocessing functions are in the src/fco2dataset folder:
