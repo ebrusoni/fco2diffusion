@@ -23,7 +23,8 @@ model, noise_scheduler, params, losses = load_model(save_dir, model_path, model_
 print("Model loaded")
 
 # load data
-df = pd.read_parquet(DATA_PATH + "SOCAT_1982_2021_grouped_colloc_augm_bin.pq")
+ds_version = ""
+df = pd.read_parquet(DATA_PATH + f"SOCAT_1982_2021_grouped_colloc_augm_binned-v{ds_version}.pq")
 df = prep_df(df, bound=True)[0]
 # map expocode column to int
 expocode_map = df['expocode'].unique()
