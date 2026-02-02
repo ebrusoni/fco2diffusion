@@ -27,6 +27,7 @@ np.random.seed(0)
 torch.manual_seed(0)
 torch.cuda.manual_seed(0)
 
+ds_version = ""
 lr = 1e-3
 batch_size = 128
 
@@ -34,8 +35,8 @@ logger = logging.getLogger(__name__)
 logger.info("------------ Starting training ------------------")
 logger.info("Training with larger random dataset")
 
-df = pd.read_parquet(DATA_PATH + "SOCAT_1982_2021_grouped_colloc_augm_bin.pq")
-df = prep_df(df, bound=True, logger=logger)[0]
+df = pd.read_parquet(DATA_PATH + f"SOCAT_1982_2021_grouped_colloc_augm_binned-v{ds_version}.pq")
+df = prep_df(df, bound=True)[0]
 
 print(df.fco2rec_uatm.max(), df.fco2rec_uatm.min())
 print(f"dataset shape: {df.shape}")

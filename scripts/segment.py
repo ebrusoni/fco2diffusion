@@ -1,7 +1,10 @@
+from datetime import datetime
 import pandas as pd
 import numpy as np
 from fco2dataset.ucruise import divide_cruise, interpolate_ship_positions
 from haversine import haversine_vector
+
+VERSION = datetime.now().strftime("%Y%m%d")
 
 def segment_cruise_data():
     NUM_BINS = 64
@@ -47,7 +50,7 @@ def segment_cruise_data():
     
     # save df to parquet
     df.to_parquet(
-        '../data/training_data/SOCAT_1982_2021_collocated_augm_binned.pq',
+        f'../data/training_data/SOCAT_1982_2021_collocated_augm_binned-v{VERSION}.pq',
         index=True,
     )
     
@@ -57,7 +60,7 @@ def segment_cruise_data():
     df_grouped.reset_index(inplace=True)
     
     df_grouped.to_parquet(
-        '../data/training_data/SOCAT_1982_2021_grouped_colloc_augm_bin.pq',
+        f'../data/training_data/SOCAT_1982_2021_grouped_colloc_augm_binned-v{VERSION}.pq',
         index=False,
     )
 

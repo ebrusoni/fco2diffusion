@@ -329,7 +329,7 @@ def add_xco2(df, xco2_mbl):
 
     return df 
 import xarray as xr
-def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_log=True, add_clim=True, add_seas=True):
+def prep_df(dfs, bound=False, index=None, with_target=True, with_log=True, add_clim=True, add_seas=True):
     """prepare dataframe for training
         - adds positional and temporal encodings
         - adds climatologies data (both fco2 and satellite)
@@ -337,7 +337,6 @@ def prep_df(dfs, logger=None, bound=False, index=None, with_target=True, with_lo
         - subtracts atmospheric co2 trend from fco2
         - removes delta_fco2 values greater than 400
     """
-    logger = make_logger(logger)
     if not isinstance(dfs, list):
         dfs = [dfs]
     
